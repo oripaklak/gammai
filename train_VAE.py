@@ -70,47 +70,61 @@ def main():
     if track_cfg.get("enabled", True) and track_cfg.get("log_model_graph", True):
         wandb.watch(model, log="all", log_freq=track_cfg.get("watch_log_freq", 10))
 
-    # 7. Training Loop
-    print(f"Starting training for {train_cfg['epochs']} epochs...")
-    for epoch in range(train_cfg["epochs"]):
-        model.train()
-        train_loss = 0
+        # 7. Training Loop
+        print(f"Starting training for {train_cfg['epochs']} epochs...")
 
-        for batch in dataloader:
-            batch_data = batch[0].to(device)
+        global_step = 0  # Add a counter to track individual steps across all epochs
 
-            optimizer.zero_grad()
-            reconstructed_batch, mu, logvar = model(batch_data)
-            loss = vae_loss_function(reconstructed_batch, batch_data, mu, logvar)
+        for epoch in range(train_cfg["epochs"]):
+            model.train()
+            train_loss = 0
 
-            loss.backward()
-            train_loss += loss.item()
-            optimizer.step()
+            for batch in dataloader:
+                batch_data = batch[0].to(device)
 
-        avg_train_loss = train_loss / len(dataloader.dataset) # divide by number of batches
-        current_epoch = epoch + 1
+                optimizer.zero_grad()
+                reconstructed_batch, mu, logvar = model(batch_data)
+                loss = vae_loss_function(reconstructed_batch, batch_data, mu, logvar)
 
-        # Base metrics for W&B
-        metrics = {
-            "epoch": current_epoch,
-            "train_loss": avg_train_loss
-        }
+                loss.backward()
 
-        # --- Evaluation Placeholder ---
-        #if current_epoch % train_cfg.get("eval_freq", 20) == 0:
-            # Uncomment and implement your validation logic here:
-            # print(f"--- Running Evaluation at Epoch {current_epoch} ---")
-            # val_loss = run_eval_pipeline(model, val_loader, device)
-            # metrics["val_loss"] = val_loss
-            #pass
+                # Record the step-level loss
+                step_loss = loss.item()
+                train_loss += step_loss
+                optimizer.step()
 
-        # Log metrics to W&B
-        if track_cfg.get("enabled", True):
-            wandb.log(metrics)
+                global_step += 1  # Increment your step counter
 
-        # Print to console according to print_freq
-        if current_epoch % train_cfg.get("print_freq", 10) == 0:
-            print(f"Epoch [{current_epoch}/{train_cfg['epochs']}] | Train Loss: {avg_train_loss:.4f}")
+                # --- 1. Log Step Metrics to W&B ---
+                if track_cfg.get("enabled", True):
+                    wandb.log({
+                        "train/step_loss": step_loss,
+                        "global_step": global_step
+                    })
+
+            # Calculate the average loss using len(dataloader) instead of len(dataset)
+            avg_train_loss = train_loss / len(dataloader)
+            current_epoch = epoch + 1
+
+            # --- 2. Log Epoch Metrics to W&B ---
+            metrics = {
+                "epoch": current_epoch,
+                "train/epoch_loss": avg_train_loss,
+                "global_step": global_step  # Ties the epoch summary to the current step timeline
+            }
+
+            # --- Evaluation Placeholder ---
+            #if current_epoch % train_cfg.get("eval_freq", 20) == 0:
+                # val_loss = run_eval_pipeline(model, val_loader, device)
+                # metrics["val/epoch_loss"] = val_loss
+                #pass
+
+            if track_cfg.get("enabled", True):
+                wandb.log(metrics)
+
+            # Print to console according to print_freq
+            if current_epoch % train_cfg.get("print_freq", 10) == 0:
+                print(f"Epoch [{current_epoch}/{train_cfg['epochs']}] | Train Loss: {avg_train_loss:.4f}")
 
     # 8. Save the trained model weights
     os.makedirs(path_cfg["checkpoints_dir"], exist_ok=True)
