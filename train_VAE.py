@@ -87,7 +87,7 @@ def main():
             train_loss += loss.item()
             optimizer.step()
 
-        avg_train_loss = train_loss / len(dataloader) # divide by number of batches
+        avg_train_loss = train_loss / len(dataloader.dataset) # divide by number of batches
         current_epoch = epoch + 1
 
         # Base metrics for W&B
