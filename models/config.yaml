@@ -1,0 +1,37 @@
+# ==============================================================================
+# VAE Configuration File
+# ==============================================================================
+
+experiment:
+  project_name: "hpge-spectrum-vae"
+
+hardware:
+  num_gpus: 1            # Number of GPUs to utilize (e.g., 0 for CPU, 1 for single GPU)
+  device_id: 0           # Default GPU device index to use if available
+
+training:
+  batch_size: 16
+  epochs: 300
+  learning_rate: 0.001
+  seed: 42
+  print_freq: 10         # Print statistics to console every N epochs
+  eval_freq: 20          # Run validation/evaluation pipeline every N epochs
+
+generation:
+  # Parameters used when running your inference/generation scripts
+  weights_to_use: "checkpoints/vae_ld32_bs16_lr0.001_ep300_latest.pth"
+  num_samples_to_generate: 100
+
+tracking:
+  wandb:
+    enabled: true
+    log_model_graph: true
+    watch_log_freq: 10
+
+model:
+  latent_dim: 32
+
+paths:
+  data_path: "data/spectrum_matrix.npy"
+  scaling_factor_path: "data/scaling_factor.npy"
+  checkpoints_dir: "checkpoints"
