@@ -10,3 +10,5 @@ __pycache__/
 *.pth
 *.pt
 data/
+results/
+wandb/
