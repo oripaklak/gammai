@@ -23,6 +23,7 @@ def main():
     model_cfg = config["model"]
     path_cfg = config["paths"]
     track_cfg = config["tracking"]["wandb"]
+    loss_cfg = config["loss"]
 
     # 1. Set Random Seeds for Reproducibility
     set_seed(train_cfg["seed"])
@@ -92,7 +93,7 @@ def main():
 
             optimizer.zero_grad()
             reconstructed_batch, mu, logvar = model(batch_data)
-            loss = vae_loss_function(reconstructed_batch, batch_data, mu, logvar)
+            loss = vae_loss_function(reconstructed_batch, batch_data, mu, logvar, loss_cfg["beta"])
 
             loss.backward()
 
