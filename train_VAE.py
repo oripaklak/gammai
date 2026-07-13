@@ -9,7 +9,7 @@ from torch.utils.data import TensorDataset, DataLoader
 
 from utils import load_config, setup_device, set_seed, count_parameters
 from models.vae import SpectrumVAE, vae_loss_function
-
+from metrics import calculate_frechet_distance, calculate_polynomial_mmd
 
 def main():
     # Parse command line arguments
@@ -36,7 +36,7 @@ def main():
         wandb.init(
             project=config["experiment"]["project_name"],
             name=run_name,
-            config=config  # Logs the entire config dictionary
+            config=config,  # Logs the entire config dictionary
         )
 
     # 4. Load and Normalize the Data
@@ -115,11 +115,43 @@ def main():
             "global_step": global_step  # Ties the epoch summary to the current step timeline
         }
 
-        # --- Evaluation Placeholder ---
+        # --- Evaluation Pipeline ---
         if current_epoch % train_cfg.get("eval_freq", 20) == 0:
-            # val_loss = run_eval_pipeline(model, val_loader, device)
-            # metrics["val/epoch_loss"] = val_loss
-            pass
+            model.eval()
+            all_real_data = []
+            all_fake_data = []
+
+            with torch.no_grad():
+                # We need a decent sample size to compute reliable statistics
+                # We'll run through the dataloader to grab real data and generate matching fake data
+                for val_batch in dataloader:
+                    real_batch = val_batch[0].to(device)
+
+                    # Purely generated data from random latent space
+                    z = torch.randn(real_batch.size(0), model_cfg["latent_dim"]).to(device)
+                    generated_batch = model.decode(z)
+
+                    all_real_data.append(real_batch.cpu().numpy())
+                    all_fake_data.append(generated_batch.cpu().numpy())
+
+            # Concatenate batches into full datasets
+            real_np = np.concatenate(all_real_data, axis=0)
+            fake_np = np.concatenate(all_fake_data, axis=0)
+
+            # Compute Metrics
+            try:
+                fd_score = calculate_frechet_distance(real_np, fake_np)
+                kid_score = calculate_polynomial_mmd(real_np, fake_np)
+
+                # Add to W&B metrics dictionary
+                metrics["eval/frechet_distance"] = fd_score
+                metrics["eval/kernel_distance"] = kid_score
+                # print(f"--> Eval Epoch {current_epoch} | KD: {kid_score:.4f}")
+                print(f"--> Eval Epoch {current_epoch} | FD: {fd_score:.4f} | KD: {kid_score:.4f}")
+            except Exception as e:
+                print(f"Warning: Failed to calculate evaluation metrics. Error: {e}")
+
+            model.train()  # Set back to train mode!
 
         if track_cfg.get("enabled", True):
             wandb.log(metrics)
