@@ -3,7 +3,7 @@
 # ==============================================================================
 
 experiment:
-  project_name: "hpge-spectrum-vae"
+  project_name: "gammai"
 
 hardware:
   num_gpus: 1            # Number of GPUs to utilize (e.g., 0 for CPU, 1 for single GPU)
@@ -12,7 +12,7 @@ hardware:
 training:
   batch_size: 256
   epochs: 200
-  learning_rate: 0.001
+  learning_rate: 0.0001
   seed: 0
   print_freq: 10         # Print statistics to console every N epochs
   eval_freq: 20          # Run validation/evaluation pipeline every N epochs

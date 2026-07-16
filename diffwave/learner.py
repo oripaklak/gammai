@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 import wandb
 
 from torch.nn.parallel import DistributedDataParallel
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from diffwave.dataset import from_path
@@ -41,7 +40,6 @@ class DiffWaveLearner:
         noise_level = np.cumprod(1 - beta)
         self.noise_level = torch.tensor(noise_level.astype(np.float32))
         self.loss_fn = nn.L1Loss()
-        self.summary_writer = None
 
     def state_dict(self):
         if hasattr(self.model, 'module') and isinstance(self.model.module, nn.Module):
@@ -133,14 +131,12 @@ class DiffWaveLearner:
         return loss
 
     def _write_summary(self, step, features, loss):
-        writer = self.summary_writer or SummaryWriter(self.model_dir, purge_step=step)
-
         # Plot the 1D signal
         fig, ax = plt.subplots()
         ax.plot(features['signal'][0].cpu().numpy())
         ax.set_title(f'Signal at step {step}')
 
-        # Log to Weights & Biases
+        # Log exclusively to Weights & Biases
         wandb.log({
             'train/loss': loss,
             'train/grad_norm': self.grad_norm,
@@ -160,9 +156,9 @@ def _train_impl(replica_id, model, dataset, args, params):
     # Initialize W&B on the master node only
     if learner.is_master:
         wandb.init(
-            project="hpge-spectrum-vae",
+            project="gammai",
             name="diffwave-training",
-            config=dict(params)  # Auto-tracks hyperparams
+            config=dict(params)
         )
 
     learner.restore_from_checkpoint()
