@@ -11,18 +11,26 @@ from torch.utils.data.distributed import DistributedSampler
 class SignalDataset(torch.utils.data.Dataset):
     def __init__(self, paths):
         super().__init__()
-        self.filenames = []
-        for path in paths:
-            # Assuming your 1-D signals are saved as standard NumPy arrays
-            self.filenames += glob(f'{path}/**/*.npy', recursive=True)
+
+        # 1. Load the raw 2D matrix
+        raw_matrix = np.load(paths[0]).astype(np.float32)
+
+        print(f"\n[INFO] Loaded dataset from {paths[0]} with shape: {raw_matrix.shape}")
+        if len(raw_matrix.shape) != 2:
+            raise ValueError(f"ERROR: Expected a 2D matrix (N x L), but got shape {raw_matrix.shape}.")
+
+        # 2. Apply your exact normalization logic
+        log_matrix = np.log1p(raw_matrix)
+        max_val = np.max(log_matrix)
+        self.matrix = log_matrix / max_val
 
     def __len__(self):
-        return len(self.filenames)
+        # Returns the number of spectrums (N)
+        return self.matrix.shape[0]
 
     def __getitem__(self, idx):
-        signal_filename = self.filenames[idx]
-        # Load the 1-D vector
-        signal = np.load(signal_filename)
+        # Grabs a single spectrum vector based on the index
+        signal = self.matrix[idx]
         return {
             'signal': signal
         }
