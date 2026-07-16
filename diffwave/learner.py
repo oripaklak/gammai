@@ -3,6 +3,7 @@ import os
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
+import wandb
 
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.tensorboard import SummaryWriter
@@ -120,7 +121,7 @@ class DiffWaveLearner:
             noise = torch.randn_like(signal)
             noisy_signal = noise_scale_sqrt * signal + (1.0 - noise_scale) ** 0.5 * noise
 
-            # Model unconditionally processes the signal (spectrogram passed as None)
+            # Model unconditionally processes the signal
             predicted = self.model(noisy_signal, t, None)
             loss = self.loss_fn(noise, predicted.squeeze(1))
 
@@ -134,16 +135,19 @@ class DiffWaveLearner:
     def _write_summary(self, step, features, loss):
         writer = self.summary_writer or SummaryWriter(self.model_dir, purge_step=step)
 
-        # Plot the 1D signal instead of logging audio
+        # Plot the 1D signal
         fig, ax = plt.subplots()
         ax.plot(features['signal'][0].cpu().numpy())
         ax.set_title(f'Signal at step {step}')
-        writer.add_figure('feature/signal', fig, step)
 
-        writer.add_scalar('train/loss', loss, step)
-        writer.add_scalar('train/grad_norm', self.grad_norm, step)
-        writer.flush()
-        self.summary_writer = writer
+        # Log to Weights & Biases
+        wandb.log({
+            'train/loss': loss,
+            'train/grad_norm': self.grad_norm,
+            'feature/signal': wandb.Image(fig)
+        }, step=step)
+
+        plt.close(fig)  # Prevent memory leak from open figures
 
 
 def _train_impl(replica_id, model, dataset, args, params):
@@ -152,8 +156,20 @@ def _train_impl(replica_id, model, dataset, args, params):
 
     learner = DiffWaveLearner(args.model_dir, model, dataset, opt, params, fp16=args.fp16)
     learner.is_master = (replica_id == 0)
+
+    # Initialize W&B on the master node only
+    if learner.is_master:
+        wandb.init(
+            project="hpge-spectrum-vae",
+            name="diffwave-training",
+            config=dict(params)  # Auto-tracks hyperparams
+        )
+
     learner.restore_from_checkpoint()
     learner.train(max_steps=args.max_steps)
+
+    if learner.is_master:
+        wandb.finish()
 
 
 def train(args, params):
