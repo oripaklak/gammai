@@ -1,0 +1,35 @@
+# ==============================================================================
+# DiffWave Experiment Configuration
+# ==============================================================================
+experiment:
+  project_name: "gammai"
+
+hardware:
+  num_gpus: 1
+  device_id: 0
+  fp16: false
+
+training:
+  batch_size: 16
+  epochs: 10000
+  learning_rate: 0.0002
+  seed: 40
+  max_grad_norm: null
+  checkpoint_freq: 200
+  print_freq: 50
+
+generation:
+  weights_to_use: "checkpoints/diffwave_bs16_lr0.0002_ep500/weights.pt"
+  num_samples_to_generate: 100
+  fast_sampling: true
+
+tracking:
+  wandb:
+    enabled: true
+    log_model_graph: true
+    watch_log_freq: 10
+
+paths:
+  data_path: "data/spectrum_matrix.npy"
+  scaling_factor_path: "data/scaling_factor.npy"
+  checkpoints_dir: "checkpoints"

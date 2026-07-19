@@ -8,7 +8,6 @@ def calculate_frechet_distance(real_data, fake_data, eps=1e-6, n_components=128)
     This is the mathematical equivalent of FID, but calculated directly
     on spectrum data (1D) instead of Inception image features (3D) .
     """
-    fake_data = np.squeeze(fake_data) # (N, 1, L) -> (N, L)
 
     # --- PCA INTEGRATION BLOCK ---
     # reduce the dimensionality from L = 16384 to a stable number (e.g., 128)

@@ -1,24 +1,21 @@
-# HPGe Gamma Spectrum Processing Pipeline
+# HPGe Gamma Spectrum Processing & Generation Pipeline
 
 ## Introduction
-Recent advances in data processing and machine learning have greatly improved the analysis of gamma-ray spectra. However, applying these methods directly to raw physical experiment files remains challenging. We propose this pipeline to parse raw high-purity germanium (HPGe) `.spe` files, converting them into clean `.txt` files, and finally compiling them into a unified NumPy matrix for downstream analysis.
+Recent advances in data processing and machine learning have greatly improved the analysis of gamma-ray spectra. However, applying these methods directly to raw physical experiment files remains challenging. We propose this pipeline to parse raw high-purity germanium (HPGe) `.spe` files, convert them into clean `.txt` files, and compile them into a unified NumPy matrix. Finally, this project leverages deep generative models (1D Convolutional VAE and DiffWave) to learn the underlying physical distribution and generate highly realistic synthetic spectra.
 
 ## Dataset
 The data used for this pipeline can be downloaded here: [https://www-nds.iaea.org/idb/](https://www-nds.iaea.org/idb/). 
 
 To prepare the dataset:
-* Navigate to the link and select the **HPGe detector** option.
-* Download the provided archive.
-* Unzip the downloaded data.
-* Save the extracted `.spe` files under the matching folder name `IAEA_HPGe_spe` within your project's `data/` directory.
+1. Navigate to the link and select the **HPGe detector** option.
+2. Download the provided archive.
+3. Unzip the downloaded data.
+4. Save the extracted `.spe` files under the matching folder name `IAEA_HPGe_spe` within your project's `data/` directory.
 
-## Instructions
-In order to run the pipeline, you should create the `gammai` environment and execute the scripts. 
-
-### Requirements
+## Requirements
 First, create an Anaconda environment with the required packages:
 ```bash
-conda create --name gammai python=3.10 numpy -y
+conda create --name gammai python=3.10 numpy pytorch scipy scikit-learn matplotlib pyyaml tqdm wandb -c pytorch -y
 ```
 
 Then, activate your environment:
@@ -26,21 +23,22 @@ Then, activate your environment:
 conda activate gammai
 ```
 
-### Project Structure
+## Project Structure
 Ensure your project follows this hierarchy before running the code:
 ```text
 project_root/
-+-- data/
-¦   +-- IAEA_HPGe_spe/                 <-- Place unzipped .spe files here
-+-- analyze_files/
-¦   +-- plot_spe.py                    <-- Plots the .spe files
-¦   +-- open_cnf_rpt.py                <-- Plots .cnf/.rpt files with a legend
-¦   +-- spe2txt.py                     <-- Converts .spe to .txt
-¦   +-- create_save_data_matrix.py     <-- Builds the .npy matrix
++-- analyze_files/           <-- Scripts for parsing and visualizing raw experimental data
++-- checkpoints/             <-- Automatically generated model weights during training
++-- configs/                 <-- Centralized YAML configuration files for models
++-- data/                    <-- Raw data, text files, and unified matrix files
++-- models/                  <-- PyTorch model architectures (VAE, DiffWave)
++-- results/                 <-- Generated spectra arrays and plots from inference
++-- scripts/                 <-- Core execution scripts for training and inference
++-- utils/                   <-- Shared helper functions, metrics, and dataloaders
 +-- README.md
 ```
 
-### Execution
+## Data Processing Pipeline
 To analyze, parse the data, and build the matrix, run the following scripts from the root directory:
 
 **1. Plot `.spe` files:**
@@ -66,3 +64,30 @@ This script reads the converted text files and saves that data into a single `.n
 ```bash
 python analyze_files/create_save_data_matrix.py
 ```
+## Model Training
+
+Both the VAE and DiffWave models are controlled entirely via their respective .yaml configuration files found in the configs/ directory.
+
+**To train the VAE:**
+```bash
+python scripts/train_vae.py --exp configs/experiments/vae_base.yaml --model configs/models/vae.yaml
+```
+
+**To train the DiffWave model:**
+```bash
+python scripts/train_diffwave.py --exp configs/experiments/diffwave_base.yaml --model configs/models/diffwave.yaml
+```
+
+## Model Inference 
+*Note*: Before running inference, make sure the ```weights_to_use``` path inside your experiment YAML files (e.g., ```configs/experiments/vae_base.yaml```) points to the specific checkpoint you want to generate from.
+
+**To generate synthetic spectra using the VAE:**
+```bash
+python scripts/inference_vae.py --exp configs/experiments/vae_base.yaml --model configs/models/vae.yaml
+```
+
+**To generate synthetic spectra using the DiffWave model:**
+```bash
+python scripts/inference_diffwave.py --exp configs/experiments/diffwave_base.yaml --model configs/models/diffwave.yaml
+```
+

@@ -78,18 +78,20 @@ class ResidualBlock(nn.Module):
 
 
 class DiffWave(nn.Module):
-    def __init__(self, params):
+    def __init__(self, config):
         super().__init__()
-        self.params = params
-        self.input_projection = Conv1d(1, params.residual_channels, 1)
-        self.diffusion_embedding = DiffusionEmbedding(len(params.noise_schedule))
+        self.config = config
+        mod_cfg = config['model']  # Access the model block
+
+        self.input_projection = Conv1d(1, mod_cfg['residual_channels'], 1)
+        self.diffusion_embedding = DiffusionEmbedding(len(mod_cfg['noise_schedule']))
 
         self.residual_layers = nn.ModuleList([
-            ResidualBlock(params.residual_channels, 2 ** (i % params.dilation_cycle_length))
-            for i in range(params.residual_layers)
+            ResidualBlock(mod_cfg['residual_channels'], 2 ** (i % mod_cfg['dilation_cycle_length']))
+            for i in range(mod_cfg['residual_layers'])
         ])
-        self.skip_projection = Conv1d(params.residual_channels, params.residual_channels, 1)
-        self.output_projection = Conv1d(params.residual_channels, 1, 1)
+        self.skip_projection = Conv1d(mod_cfg['residual_channels'], mod_cfg['residual_channels'], 1)
+        self.output_projection = Conv1d(mod_cfg['residual_channels'], 1, 1)
         nn.init.zeros_(self.output_projection.weight)
 
     def forward(self, signal, diffusion_step, _conditioner=None):

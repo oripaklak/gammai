@@ -1,24 +1,32 @@
 import os
+import sys
+import time
 import datetime
 import argparse
 import torch
 import torch.optim as optim
 import numpy as np
 import wandb
+import matplotlib.pyplot as plt
 from torch.utils.data import TensorDataset, DataLoader
 
-from utils import load_config, setup_device, set_seed, count_parameters
+# Add the project root to the Python path to import from models/ and utils/
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from utils.helpers import load_config, setup_device, set_seed, count_parameters
+from utils.metrics import calculate_frechet_distance, calculate_polynomial_mmd
+from utils.dataset import from_path
 from models.vae import SpectrumVAE, vae_loss_function
-from metrics import calculate_frechet_distance, calculate_polynomial_mmd
 
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Train Spectrum VAE")
-    parser.add_argument("--config", type=str, default="config.yaml", help="Path to the config file")
+    parser.add_argument("--exp", type=str, default="configs/experiments/vae_base.yaml", help="Path to the experiment config")
+    parser.add_argument("--model", type=str, default="configs/models/vae.yaml", help="Path to the model config")
     args = parser.parse_args()
 
-    # Load configuration blocks
-    config = load_config(args.config)
+    # Load and merge configuration blocks
+    config = load_config(args.exp, args.model)
     train_cfg = config["training"]
     model_cfg = config["model"]
     path_cfg = config["paths"]
@@ -39,23 +47,17 @@ def main():
             config=config,  # Logs the entire config dictionary
         )
 
-    # 4. Load and Normalize the Data
-    print(f"Loading data from {path_cfg['data_path']}...")
-    matrix = np.load(path_cfg["data_path"])
-    N, L = matrix.shape
+        # 4 & 5. Load and Normalize Data using centralized dataset
+        print(f"Loading data from {path_cfg['data_path']}...")
+        dataloader = from_path([path_cfg["data_path"]], config)
 
-    log_matrix = np.log1p(matrix)
-    max_val = np.max(log_matrix)
-    scaled_matrix = log_matrix / max_val
+        # Extract dimensions and scaling factor from the dataset instance
+        dataset_instance = dataloader.dataset
+        N, L = dataset_instance.matrix.shape
 
-    # Save scaling factor for generation/inference step
-    os.makedirs(os.path.dirname(path_cfg["scaling_factor_path"]), exist_ok=True)
-    np.save(path_cfg["scaling_factor_path"], max_val)
-
-    # 5. Prepare PyTorch DataLoaders
-    tensor_x = torch.Tensor(scaled_matrix)
-    dataset = TensorDataset(tensor_x)
-    dataloader = DataLoader(dataset, batch_size=train_cfg["batch_size"], shuffle=True)
+        # Save scaling factor for generation/inference step
+        os.makedirs(os.path.dirname(path_cfg["scaling_factor_path"]), exist_ok=True)
+        np.save(path_cfg["scaling_factor_path"], dataset_instance.max_val)
 
     # 6. Initialize Device and Model
     device = setup_device(config["hardware"])
@@ -89,7 +91,7 @@ def main():
         train_loss = 0
 
         for batch in dataloader:
-            batch_data = batch[0].to(device)
+            batch_data = batch['signal'].to(device)
 
             optimizer.zero_grad()
             reconstructed_batch, mu, logvar = model(batch_data)
@@ -97,22 +99,24 @@ def main():
 
             loss.backward()
 
-            # Record the step-level loss
+            # Add Gradient Norm Calculation
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1e9)
+
             step_loss = loss.item()
             train_loss += step_loss
             optimizer.step()
 
-            global_step += 1  # Increment your step counter
+            global_step += 1
 
-        # Calculate the average loss using len(dataloader.dataset)
         avg_train_loss = train_loss / len(dataloader.dataset)
         current_epoch = epoch + 1
 
-        # --- Log Epoch Metrics to W&B ---
+        # --- Standardized Epoch Metrics ---
         metrics = {
-            "epoch": current_epoch,
-            "train_loss": avg_train_loss,
-            "global_step": global_step  # Ties the epoch summary to the current step timeline
+            "train/epoch": current_epoch,
+            "train/loss_vae": avg_train_loss,
+            "train/global_step": global_step,
+            "train/grad_norm_vae": grad_norm
         }
 
         # --- Evaluation Pipeline ---
@@ -125,11 +129,11 @@ def main():
                 # We need a decent sample size to compute reliable statistics
                 # We'll run through the dataloader to grab real data and generate matching fake data
                 for val_batch in dataloader:
-                    real_batch = val_batch[0].to(device)
+                    real_batch = val_batch['signal'].to(device)
 
                     # Purely generated data from random latent space
                     z = torch.randn(real_batch.size(0), model_cfg["latent_dim"]).to(device)
-                    generated_batch = model.decode(z)
+                    generated_batch = model.decode(z).squeeze(1) # ADDED
 
                     all_real_data.append(real_batch.cpu().numpy())
                     all_fake_data.append(generated_batch.cpu().numpy())
@@ -143,10 +147,17 @@ def main():
                 fd_score = calculate_frechet_distance(real_np, fake_np)
                 kid_score = calculate_polynomial_mmd(real_np, fake_np)
 
-                # Add to W&B metrics dictionary
-                metrics["eval/frechet_distance"] = fd_score
-                metrics["eval/kernel_distance"] = kid_score
-                # print(f"--> Eval Epoch {current_epoch} | KD: {kid_score:.4f}")
+                metrics["eval/FID"] = fd_score
+                metrics["eval/KID"] = kid_score
+
+                # --- Add Image Logging ---
+                fig, ax = plt.subplots()
+                ax.plot(fake_np[0])  # Plot the first generated spectrum
+                ax.set_title(f'VAE Generated Signal (Epoch {current_epoch})')
+                metrics["feature/signal_vae"] = wandb.Image(fig)
+                plt.close(fig)
+                # -------------------------
+
                 print(f"--> Eval Epoch {current_epoch} | FD: {fd_score:.4f} | KD: {kid_score:.4f}")
             except Exception as e:
                 print(f"Warning: Failed to calculate evaluation metrics. Error: {e}")
@@ -180,10 +191,13 @@ def main():
     torch.save(state_dict_to_save, final_save_path)
 
     print(f"Training complete. Final model saved locally to: {final_save_path}")
+    print("Waiting 5 seconds for file I/O to finish...")
+    time.sleep(5)
+    os._exit(0)
 
-    # Finish W&B run
-    if track_cfg.get("enabled", True):
-        wandb.finish()
+    # Finish W&B run - firewall creates an error
+    #if track_cfg.get("enabled", True):
+    #    wandb.finish()
 
 
 if __name__ == "__main__":
