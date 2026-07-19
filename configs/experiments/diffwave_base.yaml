@@ -2,10 +2,10 @@
 # DiffWave Experiment Configuration
 # ==============================================================================
 experiment:
-  project_name: "gammai"
+  project_name: "gammai-diff"
 
 hardware:
-  num_gpus: 1
+  num_gpus: 2
   device_id: 0
   fp16: false
 
@@ -15,13 +15,15 @@ training:
   learning_rate: 0.0002
   seed: 40
   max_grad_norm: null
-  checkpoint_freq: 200
-  print_freq: 50
+  checkpoint_freq: 200 # steps
+  print_freq: 50 # steps
+  resume: false
+  keep_last_n_checkpoints: 5
 
 generation:
-  weights_to_use: "checkpoints/diffwave_bs16_lr0.0002_ep500/weights.pt"
+  weights_to_use: "checkpoints/diff_bs16_lr0.0002_ep10000/weights-10800.pt"
   num_samples_to_generate: 100
-  fast_sampling: true
+  fast_sampling: false
 
 tracking:
   wandb:

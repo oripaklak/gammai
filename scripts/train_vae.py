@@ -85,6 +85,7 @@ def main():
     # 7. Training Loop
     print(f"Starting training for {train_cfg['epochs']} epochs...")
     global_step = 0  # Add a counter to track individual steps across all epochs
+    saved_checkpoints = []
 
     for epoch in range(train_cfg["epochs"]):
         model.train()
@@ -184,6 +185,16 @@ def main():
             torch.save(state_dict_to_save, ckpt_save_path)
 
             print(f"--- Saved intermediate checkpoint: {ckpt_save_path} ---")
+
+            # --- Rolling Checkpoint Logic ---
+            saved_checkpoints.append(ckpt_save_path)
+            keep_n = train_cfg.get("keep_last_n_checkpoints", 5)
+
+            if len(saved_checkpoints) > keep_n:
+                oldest_ckpt = saved_checkpoints.pop(0)
+                if os.path.exists(oldest_ckpt):
+                    os.remove(oldest_ckpt)
+                    print(f"--- Deleted old checkpoint to save space: {oldest_ckpt} ---")
 
     # 8. Save the final trained model weights at the end of training
     final_save_path = os.path.join(run_checkpoint_dir, f"{run_name}_final.pth")

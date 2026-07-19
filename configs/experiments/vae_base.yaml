@@ -2,7 +2,7 @@
 # VAE Experiment Configuration
 # ==============================================================================
 experiment:
-  project_name: "gammai"
+  project_name: "gammai_vae"
 
 hardware:
   num_gpus: 1
@@ -14,8 +14,9 @@ training:
   learning_rate: 0.0001
   seed: 40
   eval_freq: 20
-  checkpoint_freq: 200
-  print_freq: 10
+  checkpoint_freq: 200 # epochs
+  print_freq: 10 # epochs
+  keep_last_n_checkpoints: 5
 
 generation:
   weights_to_use: "checkpoints/vae_ld32_bs64_lr0.0001_ep10000/checkpoint_ep10000.pth"

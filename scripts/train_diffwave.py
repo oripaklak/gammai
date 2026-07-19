@@ -54,6 +54,7 @@ class DiffWaveLearner:
 
         self.step = 0
         self.is_master = True
+        self.saved_checkpoints = []
 
         beta = np.array(self.model_cfg['noise_schedule'])
         noise_level = np.cumprod(1 - beta)
@@ -95,6 +96,15 @@ class DiffWaveLearner:
                 os.unlink(link_name)
             os.symlink(save_basename, link_name)
 
+            # --- Rolling Checkpoint Logic ---
+            self.saved_checkpoints.append(save_name)
+            keep_n = self.train_cfg.get("keep_last_n_checkpoints", 5)
+
+            if len(self.saved_checkpoints) > keep_n:
+                oldest_ckpt = self.saved_checkpoints.pop(0)
+                if os.path.exists(oldest_ckpt):
+                    os.remove(oldest_ckpt)
+
     def restore_from_checkpoint(self, filename='weights'):
         try:
             checkpoint = torch.load(f'{self.model_dir}/{filename}.pt')
@@ -121,35 +131,65 @@ class DiffWaveLearner:
                     if self.step % self.train_cfg['print_freq'] == 0:
                         self._write_summary(self.step, features, loss)
 
-                    # --- DiffWave Fast Sampling Evaluation ---
-                    if self.step > 0 and self.step % self.train_cfg['checkpoint_freq'] == 0:
-                        self.save_to_checkpoint()
+                        # --- DiffWave Fast Sampling Evaluation ---
+                        if self.step > 0 and self.step % self.train_cfg['checkpoint_freq'] == 0:
+                            self.save_to_checkpoint()
 
-                        # Use the imported generation logic!
-                        fake_signal = generate_samples(
-                            model=self.model,
-                            config=self.config,
-                            num_samples=16,
-                            device=device
-                        )
-                        fake_np = fake_signal.cpu().numpy()
+                            # Switch to eval mode to ensure layers behave correctly during inference
+                            self.model.eval()
 
-                        # Grab up to 16 real samples from the current batch for comparison
-                        real_np = features['signal'][:16].cpu().numpy()
+                            all_real_data = []
+                            all_fake_data = []
 
-                        try:
-                            fd_score = calculate_frechet_distance(real_np, fake_np)
-                            kid_score = calculate_polynomial_mmd(real_np, fake_np)
+                            num_samples_to_generate = 256  # Increase to 512 or 1024 if you don't mind waiting longer
+                            generated_so_far = 0
 
-                            if self.track_cfg['enabled']:
-                                wandb.log({
-                                    "eval/FID": fd_score,
-                                    "eval/KID": kid_score
-                                }, step=self.step)
+                            print(f"\nGenerating {num_samples_to_generate} samples for evaluation...")
 
-                            print(f"\n--> Eval Step {self.step} | FD: {fd_score:.4f} | KD: {kid_score:.4f}")
-                        except Exception as e:
-                            print(f"\nWarning: Failed to calculate evaluation metrics. Error: {e}")
+                            with torch.no_grad():
+                                for eval_batch in self.dataset:
+                                    # Collect real spectra
+                                    real_batch = eval_batch['signal'].to(device)
+                                    batch_size = real_batch.size(0)
+
+                                    # Generate fake spectra (using your configured Fast Sampling)
+                                    fake_signal = generate_samples(
+                                        model=self.model,
+                                        config=self.config,
+                                        num_samples=batch_size,
+                                        device=device
+                                    )
+
+                                    all_real_data.append(real_batch.cpu().numpy())
+                                    all_fake_data.append(fake_signal.cpu().numpy())
+
+                                    generated_so_far += batch_size
+
+                                    # Stop once we reach the target amount to avoid stalling training for hours
+                                    if generated_so_far >= num_samples_to_generate:
+                                        break
+
+                            # Concatenate lists into a single NumPy array and slice to the exact target size
+                            real_np = np.concatenate(all_real_data, axis=0)[:num_samples_to_generate]
+                            fake_np = np.concatenate(all_fake_data, axis=0)[:num_samples_to_generate]
+
+                            try:
+                                # Calculate metrics on the accumulated dataset
+                                fd_score = calculate_frechet_distance(real_np, fake_np)
+                                kid_score = calculate_polynomial_mmd(real_np, fake_np)
+
+                                if self.track_cfg['enabled']:
+                                    wandb.log({
+                                        "eval/FID": fd_score,
+                                        "eval/KID": kid_score
+                                    }, step=self.step)
+
+                                print(f"--> Eval Step {self.step} | FD: {fd_score:.4f} | KD: {kid_score:.4f}")
+                            except Exception as e:
+                                print(f"\nWarning: Failed to calculate evaluation metrics. Error: {e}")
+
+                            # CRITICAL: Return the model back to training mode!
+                            self.model.train()
 
                 self.step += 1
 
@@ -170,7 +210,7 @@ class DiffWaveLearner:
             noise = torch.randn_like(signal)
             noisy_signal = noise_scale_sqrt * signal + (1.0 - noise_scale) ** 0.5 * noise
 
-            predicted = self.model(noisy_signal, t, None)
+            predicted = self.model(noisy_signal, t)
             loss = self.loss_fn(noise, predicted.squeeze(1))
 
         self.scaler.scale(loss).backward()
@@ -209,6 +249,7 @@ def _train_impl(replica_id, model, dataset, config, run_dir):
     learner = DiffWaveLearner(run_dir, model, dataset, opt, config)
     learner.is_master = (replica_id == 0)
 
+    # 1. Initialize tracking (Master only)
     if learner.is_master and config['tracking']['wandb']['enabled']:
         wandb.init(
             project=config['experiment']['project_name'],
@@ -216,9 +257,19 @@ def _train_impl(replica_id, model, dataset, config, run_dir):
             config=config
         )
 
-    learner.restore_from_checkpoint()
+    # 2. Checkpoint restoration (OUTSIDE the wandb block)
+    if config['training']['resume']:
+        if learner.is_master:
+            print("Attempting to resume from checkpoint...")
+        learner.restore_from_checkpoint()
+    else:
+        if learner.is_master:
+            print("Starting fresh from Step 0...")
+
+    # 3. Start training (OUTSIDE the wandb block, ALL GPUs must run this)
     learner.train()
 
+    # 4. Finish tracking
     if learner.is_master and config['tracking']['wandb']['enabled']:
         wandb.finish()
 
