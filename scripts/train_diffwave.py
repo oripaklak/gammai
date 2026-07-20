@@ -56,8 +56,15 @@ class DiffWaveLearner:
         self.is_master = True
         self.saved_checkpoints = []
 
-        beta = np.array(self.model_cfg['noise_schedule'])
-        noise_level = np.cumprod(1 - beta)
+        # --- Dynamically Generate Noise Schedule ---
+        T = self.model_cfg['T']
+        beta_init = self.model_cfg['beta_init']
+        beta_final = self.model_cfg['beta_final']
+
+        beta = np.linspace(beta_init, beta_final, T, dtype=np.float32)
+
+        # Calculate cumulative noise levels for training
+        noise_level = np.cumprod(1 - beta) # alpha bar
         self.noise_level = torch.tensor(noise_level.astype(np.float32))
         self.loss_fn = nn.L1Loss()
 
@@ -116,9 +123,6 @@ class DiffWaveLearner:
     def evaluate(self):
         """Generates fast samples and calculates FID/KID metrics."""
         device = next(self.model.parameters()).device
-
-        # Switch to eval mode to ensure layers behave correctly during inference
-        self.model.eval()
 
         all_real_data = []
         all_fake_data = []
@@ -192,6 +196,7 @@ class DiffWaveLearner:
                     # --- DiffWave Fast Sampling Evaluation ---
                     if self.step > 0 and self.step % self.train_cfg['checkpoint_freq'] == 0:
                         self.save_to_checkpoint()
+                        self.model.eval()
                         self.evaluate()
                         self.model.train()
 
