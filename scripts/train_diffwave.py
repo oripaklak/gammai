@@ -113,6 +113,64 @@ class DiffWaveLearner:
         except FileNotFoundError:
             return False
 
+    def evaluate(self):
+        """Generates fast samples and calculates FID/KID metrics."""
+        device = next(self.model.parameters()).device
+
+        # Switch to eval mode to ensure layers behave correctly during inference
+        self.model.eval()
+
+        all_real_data = []
+        all_fake_data = []
+
+        num_samples_to_generate = 256  # Increase to 512 or 1024 if you don't mind waiting longer
+        generated_so_far = 0
+
+        print(f"\nGenerating {num_samples_to_generate} samples for evaluation...")
+
+        with torch.no_grad():
+            for eval_batch in self.dataset:
+                # Collect real spectra
+                real_batch = eval_batch['signal'].to(device)
+                batch_size = real_batch.size(0)
+
+                # Generate fake spectra (using your configured Fast Sampling)
+                fake_signal = generate_samples(
+                    model=self.model,
+                    config=self.config,
+                    num_samples=batch_size,
+                    device=device
+                )
+
+                all_real_data.append(real_batch.cpu().numpy())
+                all_fake_data.append(fake_signal.cpu().numpy())
+
+                generated_so_far += batch_size
+
+                # Stop once we reach the target amount to avoid stalling training for hours
+                if generated_so_far >= num_samples_to_generate:
+                    break
+
+        # Concatenate lists into a single NumPy array and slice to the exact target size
+        real_np = np.concatenate(all_real_data, axis=0)[:num_samples_to_generate]
+        fake_np = np.concatenate(all_fake_data, axis=0)[:num_samples_to_generate]
+
+        try:
+            # Calculate metrics on the accumulated dataset
+            fd_score = calculate_frechet_distance(real_np, fake_np)
+            kid_score = calculate_polynomial_mmd(real_np, fake_np)
+
+            if self.track_cfg['enabled']:
+                wandb.log({
+                    "eval/FID": fd_score,
+                    "eval/KID": kid_score
+                }, step=self.step)
+
+            print(f"--> Eval Step {self.step} | FD: {fd_score:.4f} | KD: {kid_score:.4f}")
+        except Exception as e:
+            print(f"\nWarning: Failed to calculate evaluation metrics. Error: {e}")
+
+
     def train(self):
         device = next(self.model.parameters()).device
 
@@ -131,65 +189,11 @@ class DiffWaveLearner:
                     if self.step % self.train_cfg['print_freq'] == 0:
                         self._write_summary(self.step, features, loss)
 
-                        # --- DiffWave Fast Sampling Evaluation ---
-                        if self.step > 0 and self.step % self.train_cfg['checkpoint_freq'] == 0:
-                            self.save_to_checkpoint()
-
-                            # Switch to eval mode to ensure layers behave correctly during inference
-                            self.model.eval()
-
-                            all_real_data = []
-                            all_fake_data = []
-
-                            num_samples_to_generate = 256  # Increase to 512 or 1024 if you don't mind waiting longer
-                            generated_so_far = 0
-
-                            print(f"\nGenerating {num_samples_to_generate} samples for evaluation...")
-
-                            with torch.no_grad():
-                                for eval_batch in self.dataset:
-                                    # Collect real spectra
-                                    real_batch = eval_batch['signal'].to(device)
-                                    batch_size = real_batch.size(0)
-
-                                    # Generate fake spectra (using your configured Fast Sampling)
-                                    fake_signal = generate_samples(
-                                        model=self.model,
-                                        config=self.config,
-                                        num_samples=batch_size,
-                                        device=device
-                                    )
-
-                                    all_real_data.append(real_batch.cpu().numpy())
-                                    all_fake_data.append(fake_signal.cpu().numpy())
-
-                                    generated_so_far += batch_size
-
-                                    # Stop once we reach the target amount to avoid stalling training for hours
-                                    if generated_so_far >= num_samples_to_generate:
-                                        break
-
-                            # Concatenate lists into a single NumPy array and slice to the exact target size
-                            real_np = np.concatenate(all_real_data, axis=0)[:num_samples_to_generate]
-                            fake_np = np.concatenate(all_fake_data, axis=0)[:num_samples_to_generate]
-
-                            try:
-                                # Calculate metrics on the accumulated dataset
-                                fd_score = calculate_frechet_distance(real_np, fake_np)
-                                kid_score = calculate_polynomial_mmd(real_np, fake_np)
-
-                                if self.track_cfg['enabled']:
-                                    wandb.log({
-                                        "eval/FID": fd_score,
-                                        "eval/KID": kid_score
-                                    }, step=self.step)
-
-                                print(f"--> Eval Step {self.step} | FD: {fd_score:.4f} | KD: {kid_score:.4f}")
-                            except Exception as e:
-                                print(f"\nWarning: Failed to calculate evaluation metrics. Error: {e}")
-
-                            # CRITICAL: Return the model back to training mode!
-                            self.model.train()
+                    # --- DiffWave Fast Sampling Evaluation ---
+                    if self.step > 0 and self.step % self.train_cfg['checkpoint_freq'] == 0:
+                        self.save_to_checkpoint()
+                        self.evaluate()
+                        self.model.train()
 
                 self.step += 1
 
