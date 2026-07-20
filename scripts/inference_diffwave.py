@@ -44,13 +44,12 @@ def generate_samples(model, config, num_samples, device):
         T = np.array(T, dtype=np.float32)
 
         signal = torch.randn(num_samples, signal_len, device=device)
+        noise_scale = torch.from_numpy(alpha_cum ** 0.5).float().unsqueeze(1).to(device)
 
         for n in range(len(alpha) - 1, -1, -1):
             c1 = 1 / alpha[n] ** 0.5
             c2 = beta[n] / (1 - alpha_cum[n]) ** 0.5
-
-            signal = c1 * (signal - c2 * model(signal, torch.tensor([T[n]], device=signal.device), None).squeeze(1))
-
+            signal = c1 * (signal - c2 * model(signal, torch.tensor([T[n]], device=signal.device)).squeeze(1))
             if n > 0:
                 noise = torch.randn_like(signal)
                 sigma = ((1.0 - alpha_cum[n - 1]) / (1.0 - alpha_cum[n]) * beta[n]) ** 0.5
@@ -64,7 +63,7 @@ def generate_samples(model, config, num_samples, device):
 
 def predict(config, device=torch.device('cuda')):
     """Loads weights from disk and calls the reusable generation loop."""
-    weights_path = config['generation']['weights_to_use']
+    weights_path = config['generation']['model_path']
     num_samples = config['generation']['num_samples_to_generate']
 
     if not os.path.exists(weights_path):
@@ -83,7 +82,7 @@ def main(args):
     config = load_config(args.exp, args.model)
 
     device = setup_device(config['hardware'])
-    weights_path = config['generation']['weights_to_use']
+    weights_path = config['generation']['model_path']
     num_samples = config['generation']['num_samples_to_generate']
     scaling_path = config['paths']['scaling_factor_path']
 

@@ -21,7 +21,7 @@ training:
   keep_last_n_checkpoints: 5
 
 generation:
-  weights_to_use: "checkpoints/diff_bs16_lr0.0002_ep10000/weights-10800.pt"
+  model_path: "checkpoints/diff_bs16_lr0.0002_ep10000/weights-10800.pt"
   num_samples_to_generate: 100
   fast_sampling: false
 

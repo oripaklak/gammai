@@ -19,7 +19,7 @@ training:
   keep_last_n_checkpoints: 5
 
 generation:
-  weights_to_use: "checkpoints/vae_ld32_bs64_lr0.0001_ep10000/checkpoint_ep10000.pth"
+  model_path: "checkpoints/vae_ld32_bs64_lr0.0001_ep10000/checkpoint_ep10000.pth"
   num_samples_to_generate: 100
 
 tracking:

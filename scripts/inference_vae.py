@@ -14,7 +14,7 @@ from models.vae import SpectrumVAE
 config = load_config("configs/vae.yaml")
 
 LATENT_DIM = config["model"]["latent_dim"]
-WEIGHTS_PATH = config["generation"]["weights_to_use"]
+WEIGHTS_PATH = config["generation"]["model_path"]
 NUM_SAMPLES = config["generation"]["num_samples_to_generate"]
 SCALING_PATH = config["paths"]["scaling_factor_path"]
 L = config["model"]["signal_len"]
