@@ -56,6 +56,15 @@ class DiffWaveLearner:
         self.is_master = True
         self.saved_checkpoints = []
 
+        # --- Tracking Directories Setup ---
+        self.track_dir = os.path.join(model_dir, "tracked_signals")
+        self.track_dir_eval = os.path.join(self.track_dir, "eval")
+        self.track_dir_train = os.path.join(self.track_dir, "train")
+
+        if self.is_master:
+            os.makedirs(self.track_dir_eval, exist_ok=True)
+            os.makedirs(self.track_dir_train, exist_ok=True)
+
         # --- Dynamically Generate Noise Schedule ---
         T = self.model_cfg['T']
         beta_init = self.model_cfg['beta_init']
@@ -68,6 +77,8 @@ class DiffWaveLearner:
         self.noise_level = torch.tensor(noise_level.astype(np.float32))
         self.loss_fn = nn.L1Loss()
 
+        # Load scaling factor for un-normalizing x_0 tracks
+        self.max_val = np.load(config['paths']['scaling_factor_path'])
     def state_dict(self):
         if hasattr(self.model, 'module') and isinstance(self.model.module, nn.Module):
             model_state = self.model.module.state_dict()
@@ -138,12 +149,15 @@ class DiffWaveLearner:
                 real_batch = eval_batch['signal'].to(device)
                 batch_size = real_batch.size(0)
 
-                # Generate fake spectra (using your configured Fast Sampling)
+                # Generate fake spectra passing down tracking information
                 fake_signal = generate_samples(
                     model=self.model,
                     config=self.config,
                     num_samples=batch_size,
-                    device=device
+                    device=device,
+                    track_dir=self.track_dir_eval,
+                    global_step=self.step,
+                    max_val=self.max_val
                 )
 
                 all_real_data.append(real_batch.cpu().numpy())
@@ -174,6 +188,52 @@ class DiffWaveLearner:
         except Exception as e:
             print(f"\nWarning: Failed to calculate evaluation metrics. Error: {e}")
 
+    def track_forward_process(self, clean_signal, noisy_signal, noise, t_val, global_step):
+        """Plots the actual noisy signal vs original clean signal for comparison."""
+        T_total = self.model_cfg['T']
+
+        # Python indices: 0 -> x_1, 99 -> x_100, 199 -> x_200 (for T=200)
+        interesting_t_values = [0, T_total // 2 - 1, T_total - 1]
+
+        if t_val not in interesting_t_values:
+            return
+
+        # Map Python's 0-index back to the paper's 1-indexed math
+        math_step = t_val + 1
+
+        # --- 1. Track x_0 (The Pure Clean Signal) ---
+        # We save this standalone plot whenever x_1 is triggered
+        if math_step == 1:
+            x0_path = os.path.join(self.track_dir_train, "x_0")
+            os.makedirs(x0_path, exist_ok=True)
+
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.plot(clean_signal[0].cpu().numpy(), color="blue")
+            ax.set_title(f"Original Clean Signal (x_0)\nCaptured at Global Step: {global_step}")
+            ax.set_ylabel("Amplitude (Normalized)")
+            plt.tight_layout()
+            plt.savefig(os.path.join(x0_path, f"clean_signal_step{global_step}.png"))
+            plt.close(fig)
+
+        # --- 2. Track the Noisy Steps (x_1, x_100, x_200) ---
+        current_track_path = os.path.join(self.track_dir_train, f"x_{math_step}")
+        os.makedirs(current_track_path, exist_ok=True)
+
+        # Extract numpy arrays
+        clean_np = clean_signal[0].cpu().numpy()
+        noisy_np = noisy_signal[0].cpu().numpy()
+
+        # Plot Clean vs Noisy using the paper's exact notation
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(clean_np, label="x_0 (Original Clean Signal)", alpha=0.75, color="blue")
+        ax.plot(noisy_np, label=f"x_{math_step} (Noisy Signal)", alpha=0.75, color="red", linestyle="--")
+
+        ax.set_title(f"Forward Pass Signal Comparison | Step: x_{math_step}\nCaptured at Global Step: {global_step}")
+        ax.set_ylabel("Amplitude (Normalized)")
+        ax.legend(loc="upper right")
+        plt.tight_layout()
+        plt.savefig(os.path.join(current_track_path, f"noisy_vs_clean_step{global_step}.png"))
+        plt.close(fig)
 
     def train(self):
         device = next(self.model.parameters()).device
@@ -193,12 +253,14 @@ class DiffWaveLearner:
                     if self.step % self.train_cfg['print_freq'] == 0:
                         self._write_summary(self.step, features, loss)
 
-                    # --- DiffWave Fast Sampling Evaluation ---
-                    if self.step > 0 and self.step % self.train_cfg['checkpoint_freq'] == 0:
-                        self.save_to_checkpoint()
-                        self.model.eval()
-                        self.evaluate()
-                        self.model.train()
+                        # --- DiffWave Fast Sampling Evaluation & Tracking ---
+                        if self.step > 0 and self.step % self.train_cfg['checkpoint_freq'] == 0:
+                            self.save_to_checkpoint()
+
+                            # Track Reverse Process & Evaluate (Removing noise)
+                            self.model.eval()
+                            self.evaluate()
+                            self.model.train()
 
                 self.step += 1
 
@@ -213,11 +275,18 @@ class DiffWaveLearner:
         self.noise_level = self.noise_level.to(device)
 
         with self.autocast:
-            t = torch.randint(0, len(self.model_cfg['noise_schedule']), [N], device=signal.device)
+            t = torch.randint(0, len(self.noise_level), [N], device=signal.device)
             noise_scale = self.noise_level[t].unsqueeze(1)
             noise_scale_sqrt = noise_scale ** 0.5
             noise = torch.randn_like(signal)
             noisy_signal = noise_scale_sqrt * signal + (1.0 - noise_scale) ** 0.5 * noise
+
+            # --- Capture Real Forward Process (Master Only) ---
+            if self.is_master:
+                # We track based on the dynamic t picked for the first sample in the batch
+                first_sample_t = t[0].item()
+                # Pass clean signal, noisy signal, pure noise, current t value, and global step
+                self.track_forward_process(signal[0:1], noisy_signal[0:1], noise[0:1], first_sample_t, self.step)
 
             predicted = self.model(noisy_signal, t)
             loss = self.loss_fn(noise, predicted.squeeze(1))

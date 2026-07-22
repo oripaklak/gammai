@@ -3,6 +3,7 @@ import os
 import sys
 import datetime
 import torch
+import matplotlib.pyplot as plt
 from argparse import ArgumentParser
 
 # Add the project root to the Python path
@@ -12,17 +13,21 @@ from utils.helpers import load_config, setup_device, plot_and_save_spectra
 from models.diffwave import DiffWave
 
 
-def generate_samples(model, config, num_samples, device):
-    """Core sampling logic for DiffWave"""
-    model.eval()
+def generate_samples(model, config, num_samples, device, track_dir=None, global_step=None, max_val=None):
+    """Core sampling logic for DiffWave with linear step tracking."""
     gen_cfg = config['generation']
     mod_cfg = config['model']
 
-    fast_sampling = gen_cfg['fast_sampling']
+    fast_sampling = gen_cfg.get('fast_sampling', True)
     signal_len = mod_cfg['signal_len']
+    num_tracking_steps = gen_cfg.get('num_tracking_steps', 0)
 
     with torch.no_grad():
-        training_noise_schedule = np.array(mod_cfg['noise_schedule'])
+        T = mod_cfg['T']
+        beta_init = mod_cfg['beta_init']
+        beta_final = mod_cfg['beta_final']
+        training_noise_schedule = np.linspace(beta_init, beta_final, T, dtype=np.float32)
+
         inference_noise_schedule = np.array(
             mod_cfg['inference_noise_schedule']) if fast_sampling else training_noise_schedule
 
@@ -33,35 +38,67 @@ def generate_samples(model, config, num_samples, device):
         alpha = 1 - beta
         alpha_cum = np.cumprod(alpha)
 
-        T = []
+        T_steps = []
         for s in range(len(inference_noise_schedule)):
             for t in range(len(training_noise_schedule) - 1):
                 if talpha_cum[t + 1] <= alpha_cum[s] <= talpha_cum[t]:
                     twiddle = (talpha_cum[t] ** 0.5 - alpha_cum[s] ** 0.5) / (
                             talpha_cum[t] ** 0.5 - talpha_cum[t + 1] ** 0.5)
-                    T.append(t + twiddle)
+                    T_steps.append(t + twiddle)
                     break
-        T = np.array(T, dtype=np.float32)
+        T_steps = np.array(T_steps, dtype=np.float32)
 
         signal = torch.randn(num_samples, signal_len, device=device)
-        noise_scale = torch.from_numpy(alpha_cum ** 0.5).float().unsqueeze(1).to(device)
+        noise_scale = torch.from_numpy(alpha_cum ** 0.5).float().to(device)
+
+        if track_dir and num_tracking_steps > 0:
+            track_indices = set(np.linspace(len(alpha) - 1, 0, num_tracking_steps, dtype=int))
+            current_track_path = os.path.join(track_dir, f"step_{global_step}")
+            os.makedirs(current_track_path, exist_ok=True)
+        else:
+            track_indices = set()
 
         for n in range(len(alpha) - 1, -1, -1):
+            if n == len(alpha) - 1 and n in track_indices:
+                _save_snapshot(current_track_path, signal[0], noise_scale[n].item(), n, "initial_T")
+
             c1 = 1 / alpha[n] ** 0.5
             c2 = beta[n] / (1 - alpha_cum[n]) ** 0.5
-            signal = c1 * (signal - c2 * model(signal, torch.tensor([T[n]], device=signal.device)).squeeze(1))
+            signal = c1 * (signal - c2 * model(signal, torch.tensor([T_steps[n]], device=signal.device)).squeeze(1))
+
             if n > 0:
                 noise = torch.randn_like(signal)
                 sigma = ((1.0 - alpha_cum[n - 1]) / (1.0 - alpha_cum[n]) * beta[n]) ** 0.5
                 signal += sigma * noise
 
+            if n in track_indices and n != len(alpha) - 1:
+                label = "final_0" if n == 0 else f"mid_{n}"
+                _save_snapshot(current_track_path, signal[0], noise_scale[n].item(), n, label, max_val)
+
         signal = torch.clamp(signal, -1.0, 1.0)
 
-    model.train()  # Reset to train mode
     return signal
 
 
-def predict(config, device=torch.device('cuda')):
+def _save_snapshot(track_path, single_signal, noise_scale_val, loop_idx, label, max_val=None):
+    """Helper to generate visual plots of specific timesteps."""
+    sig_np = single_signal.cpu().numpy()
+
+    # Removed un-normalization to keep the plot in the normalized domain
+    y_label = "Amplitude (Normalized)"
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(sig_np)
+    ax.set_title(
+        f"Diffusion Generation Progress [{label.upper()}] | Loop Index: {loop_idx}\nNoise Scale: {noise_scale_val:.6f}")
+    ax.set_xlabel("Feature Dimension")
+    ax.set_ylabel(y_label)
+    plt.tight_layout()
+    plt.savefig(os.path.join(track_path, f"{label}_plot.png"))
+    plt.close(fig)
+
+
+def predict(config, device=torch.device('cuda'), track_dir=None):
     """Loads weights from disk and calls the reusable generation loop."""
     weights_path = config['generation']['model_path']
     num_samples = config['generation']['num_samples_to_generate']
@@ -72,10 +109,32 @@ def predict(config, device=torch.device('cuda')):
     checkpoint = torch.load(weights_path, map_location=device)
     model = DiffWave(config).to(device)
     model.load_state_dict(checkpoint['model'])
+    model.eval()
 
-    # Call the isolated generation logic
-    return generate_samples(model, config, num_samples, device)
+    # Pass the track_dir down into the generator block
+    return generate_samples(model, config, num_samples, device, track_dir=track_dir, global_step="inference")
 
+
+def generate_and_process_samples(config, device, scaling_path, weights_path):
+    """Generates samples, reverses normalization, and prepares the output directory."""
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    model_name = os.path.splitext(os.path.basename(weights_path))[0]
+    run_name = os.path.basename(os.path.dirname(weights_path))
+    save_dir = f"results/{run_name}/{model_name}_{timestamp}"
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Hardcode track_dir to None so standalone inference NEVER tracks intermediate steps
+    track_dir = None
+
+    signal = predict(config=config, device=device, track_dir=track_dir)
+    generated_scaled = signal.cpu().numpy()
+
+    max_val = np.load(scaling_path)
+    generated_log = generated_scaled * max_val
+    generated_counts = np.expm1(generated_log)
+    generated_counts = np.clip(np.round(generated_counts), a_min=0, a_max=None)
+
+    return generated_counts, save_dir, model_name
 
 def main(args):
     # Load and merge configuration blocks
@@ -88,24 +147,10 @@ def main(args):
 
     print(f"Generating {num_samples} samples from {weights_path}...")
 
-    # 1. Generate normalized signals
-    signal = predict(config=config, device=device)
-    generated_scaled = signal.cpu().numpy()
+    generated_counts, save_dir, model_name = generate_and_process_samples(
+        config, device, scaling_path, weights_path
+    )
 
-    # 2. Reverse the Normalization
-    max_val = np.load(scaling_path)
-    generated_log = generated_scaled * max_val
-    generated_counts = np.expm1(generated_log)
-    generated_counts = np.clip(np.round(generated_counts), a_min=0, a_max=None)
-
-    # 3. Setup Directory
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    model_name = os.path.splitext(os.path.basename(weights_path))[0]
-    run_name = os.path.basename(os.path.dirname(weights_path))
-    save_dir = f"results/{run_name}/{model_name}_{timestamp}"
-    os.makedirs(save_dir, exist_ok=True)
-
-    # 4. Plot and Save
     plot_and_save_spectra(generated_counts, save_dir, model_name)
 
     data_path = os.path.join(save_dir, f"all_{num_samples}_samples.npy")
