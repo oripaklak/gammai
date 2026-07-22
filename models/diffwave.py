@@ -84,7 +84,7 @@ class DiffWave(nn.Module):
         mod_cfg = config['model']  # Access the model block
 
         self.input_projection = Conv1d(1, mod_cfg['residual_channels'], 1)
-        self.diffusion_embedding = DiffusionEmbedding(len(mod_cfg['noise_schedule']))
+        self.diffusion_embedding = DiffusionEmbedding(mod_cfg['T'])
 
         self.residual_layers = nn.ModuleList([
             ResidualBlock(mod_cfg['residual_channels'], 2 ** (i % mod_cfg['dilation_cycle_length']))

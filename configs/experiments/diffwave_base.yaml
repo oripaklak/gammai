@@ -5,25 +5,26 @@ experiment:
   project_name: "gammai-diff"
 
 hardware:
-  num_gpus: 1
+  num_gpus: 2
   device_id: 0
   fp16: false
 
 training:
-  batch_size: 64
-  epochs: 1000
+  batch_size: 16
+  epochs: 700
   learning_rate: 0.0002
   seed: 40
   max_grad_norm: null
-  checkpoint_freq: 240 # steps
+  checkpoint_freq: 180 # steps
   print_freq: 60 # steps
   resume: false
   keep_last_n_checkpoints: 5
 
 generation:
-  model_path: "checkpoints/diff_bs16_lr0.0002_ep10000/weights-10800.pt"
-  num_samples_to_generate: 100
+  model_path: "checkpoints/diff_bs16_lr0.0002_ep1000/weights-180.pt"
+  num_samples_to_generate: 50
   fast_sampling: false
+  num_tracking_steps: 3 # Set to 0 to disable tracking completely
 
 tracking:
   wandb:
