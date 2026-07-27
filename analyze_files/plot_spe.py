@@ -72,8 +72,8 @@ def read_spe_file(filepath):
 # SETUP AND DATA LOADING
 # ==========================================
 
-dataset_dir = "data/IAEA_HPGe_spe"
-output_dir = "data/IAEA_HPGe_plots"
+dataset_dir = "data/IAEA_HPGe/spe"
+output_dir = "data/IAEA_HPGe/plots"
 
 # Create output directory
 os.makedirs(output_dir, exist_ok=True)

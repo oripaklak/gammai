@@ -2,7 +2,7 @@ import numpy as np
 from pathlib import Path
 
 # Define directories
-data_dir = Path("data/IAEA_HPGe_txt")
+data_dir = Path("data/IAEA_HPGe/txt")
 output_file = Path("data/spectrum_matrix.npy")
 
 # Get a list of all text files

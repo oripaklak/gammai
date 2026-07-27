@@ -2,8 +2,8 @@ import os
 from pathlib import Path
 
 # Define directories
-source_dir = Path("data/IAEA_HPGe_spe")
-target_dir = Path("data/IAEA_HPGe_txt")
+source_dir = Path("data/IAEA_HPGe/spe")
+target_dir = Path("data/IAEA_HPGe/txt")
 
 # Create the target directory
 target_dir.mkdir(parents=True, exist_ok=True)
