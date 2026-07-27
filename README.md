@@ -81,12 +81,31 @@ python scripts/train_diffwave.py --exp configs/experiments/diffwave_base.yaml --
 ## Model Inference 
 *Note*: Before running inference, make sure the ```weights_to_use``` path inside your experiment YAML files (e.g., ```configs/experiments/vae_base.yaml```) points to the specific checkpoint you want to generate from.
 
-**To generate synthetic spectra using the VAE:**
+### VAE
+
+**Generate synthetic spectra using:**
 ```bash
 python scripts/inference_vae.py --exp configs/experiments/vae_base.yaml --model configs/models/vae.yaml
 ```
 
-**To generate synthetic spectra using the DiffWave model:**
+**Latent Space Visualization & Clustering:**
+
+To generate a 2D plot of the latent space with overlaid, color-coded miniature spectra (using PCA and K-Means), run the following command from the project root:
+
+```bash
+# Run with default configurations and 5 clusters
+python scripts/plot_latent_space.py
+```
+You can customize the number of clusters or point the script to different configuration files using command-line arguments:
+```bash
+python scripts/plot_latent_space.py \
+    --exp configs/experiments/vae_base.yaml \
+    --model configs/models/vae.yaml \
+    --clusters 8
+```
+
+### Diffusion
+**Generate synthetic spectra using the DiffWave model:**
 ```bash
 python scripts/inference_diffwave.py --exp configs/experiments/diffwave_base.yaml --model configs/models/diffwave.yaml
 ```

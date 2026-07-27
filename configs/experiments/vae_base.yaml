@@ -2,7 +2,7 @@
 # VAE Experiment Configuration
 # ==============================================================================
 experiment:
-  project_name: "gammai_vae"
+  project_name: "gammai-vae"
 
 hardware:
   num_gpus: 1
