@@ -14,39 +14,6 @@ def get_file_number(filepath):
         return -1
 
 
-def spe_to_txt(filepath):
-    """
-    Reads a .spe file, strips whitespace from each line,
-    and writes the cleaned content to a .txt file.
-    """
-    # Generate the output filename by replacing the extension with .txt
-    base_name = os.path.splitext(filepath)[0]
-    out_filepath = f"{base_name}.txt"
-
-    processed_lines = []
-
-    # Read and process the original file
-    with open(filepath, 'r', encoding='utf-8') as file:
-        for line in file:
-            line = line.strip()
-
-            # Optional: Skip empty lines (remove this if you want to keep them)
-            if not line:
-                continue
-
-            # Add any specific .spe parsing logic here if needed
-
-            processed_lines.append(line)
-
-    # Write the processed lines to the new .txt file
-    with open(out_filepath, 'w', encoding='utf-8') as out_file:
-        for line in processed_lines:
-            out_file.write(f"{line}\n")
-
-    print(f"Successfully converted! Saved to: {out_filepath}")
-    return out_filepath
-
-
 def read_spe_file(filepath):
     """Parses an .spe file and returns a list of counts."""
     counts = []
@@ -72,8 +39,8 @@ def read_spe_file(filepath):
 # SETUP AND DATA LOADING
 # ==========================================
 
-dataset_dir = "data/IAEA_HPGe/spe"
-output_dir = "data/IAEA_HPGe/plots"
+dataset_dir = "data/IAEA_HPGe/2023/spe"
+output_dir = "data/IAEA_HPGe/2023/plots"
 
 # Create output directory
 os.makedirs(output_dir, exist_ok=True)
@@ -91,10 +58,6 @@ print(f"Found {len(all_spe_files)} files. Generating individual plots in order..
 # Using tqdm to show a progress bar so you know how long it will take
 for filepath in tqdm(all_spe_files, desc="Saving Plots"):
     counts = read_spe_file(filepath)
-    spe_to_txt(filepath)
-    if not counts:
-        continue
-
     file_num = get_file_number(filepath)
 
     plt.figure(figsize=(10, 5))
