@@ -40,8 +40,7 @@ with torch.no_grad():
         generated_scaled = np.expand_dims(generated_scaled, axis=0)
 
 # --- 4. Reverse the Normalization ---
-generated_log = generated_scaled * max_val
-generated_counts = np.expm1(generated_log)
+generated_counts = unnormalize(generated_scaled, max_val)
 generated_counts = np.clip(np.round(generated_counts), a_min=0, a_max=None)
 
 # --- 5. Setup Directory ---
