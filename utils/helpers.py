@@ -47,6 +47,7 @@ def set_seed(seed):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
+
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -86,3 +87,24 @@ def plot_and_save_spectra(generated_counts, save_dir, model_name):
         plt.savefig(plot_path, dpi=300)
 
         plt.close()
+
+def normalize(signal, max_val):
+    """
+    Normalizes the raw signal by applying log1p and dividing by the global maximum.
+    Works with both NumPy arrays and PyTorch tensors.
+    """
+    if isinstance(signal, torch.Tensor):
+        return torch.log1p(signal) / max_val
+    else:
+        return np.log1p(signal) / max_val
+
+
+def unnormalize(signal, max_val):
+    """
+    Reverses the normalization to return the signal to its raw integer counts.
+    Multiplies by max_val and applies expm1.
+    """
+    if isinstance(signal, torch.Tensor):
+        return torch.expm1(signal * max_val)
+    else:
+        return np.expm1(signal * max_val)

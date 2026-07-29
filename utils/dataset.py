@@ -2,7 +2,7 @@ import numpy as np
 import os
 import torch
 from torch.utils.data.distributed import DistributedSampler
-
+from utils.helpers import normalize
 
 class SignalDataset(torch.utils.data.Dataset):
     def __init__(self, paths, config):
@@ -15,10 +15,12 @@ class SignalDataset(torch.utils.data.Dataset):
         if len(raw_matrix.shape) != 2:
             raise ValueError(f"ERROR: Expected a 2D matrix (N x L), but got shape {raw_matrix.shape}.")
 
-        # Apply normalization logic
+        # Find the global max_val required for normalization
         log_matrix = np.log1p(raw_matrix)
         self.max_val = np.max(log_matrix)
-        self.matrix = log_matrix / self.max_val
+
+        # Apply normalization using the helper function
+        self.matrix = normalize(raw_matrix, self.max_val)
 
     def __len__(self):
         return self.matrix.shape[0]
