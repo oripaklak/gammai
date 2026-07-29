@@ -26,11 +26,14 @@ def generate_samples(model, config, num_samples, device, track_dir=None, global_
         T = mod_cfg['T']
         beta_init = mod_cfg['beta_init']
         beta_final = mod_cfg['beta_final']
-        training_noise_schedule = np.linspace(beta_init, beta_final, T, dtype=np.float32)
 
+        # Define noise variance schedules (beta)
+        training_noise_schedule = np.linspace(beta_init, beta_final, T, dtype=np.float32)
         inference_noise_schedule = np.array(
             mod_cfg['inference_noise_schedule']) if fast_sampling else training_noise_schedule
 
+        # alpha = 1 - beta. alpha_cum is alpha_bar (cumulative product)
+        # These track the exact ratio of clean signal to noise at any given step
         talpha = 1 - training_noise_schedule
         talpha_cum = np.cumprod(talpha)
 
@@ -38,6 +41,7 @@ def generate_samples(model, config, num_samples, device, track_dir=None, global_
         alpha = 1 - beta
         alpha_cum = np.cumprod(alpha)
 
+        # Map inference steps to fractional training steps (interpolation for fast sampling)
         T_steps = []
         for s in range(len(inference_noise_schedule)):
             for t in range(len(training_noise_schedule) - 1):
@@ -48,6 +52,7 @@ def generate_samples(model, config, num_samples, device, track_dir=None, global_
                     break
         T_steps = np.array(T_steps, dtype=np.float32)
 
+        # Start inference with pure Gaussian noise (x_T)
         signal = torch.randn(num_samples, signal_len, device=device)
         noise_scale = torch.from_numpy(alpha_cum ** 0.5).float().to(device)
 
@@ -58,15 +63,21 @@ def generate_samples(model, config, num_samples, device, track_dir=None, global_
         else:
             track_indices = set()
 
+        # Reverse diffusion loop: gradually denoise from step T down to 0
         for n in range(len(alpha) - 1, -1, -1):
             if n == len(alpha) - 1 and n in track_indices:
                 _save_snapshot(current_track_path, signal[0], noise_scale[n].item(), n, "initial_T")
 
+            # c1 and c2 are constants for the reverse step mean equation
             c1 = 1 / alpha[n] ** 0.5
             c2 = beta[n] / (1 - alpha_cum[n]) ** 0.5
+
+            # Predict the noise using the model, then subtract it to estimate the cleaner signal
             signal = c1 * (signal - c2 * model(signal, torch.tensor([T_steps[n]], device=signal.device)).squeeze(1))
 
             if n > 0:
+                # Inject a calculated amount of new variance (Langevin noise) back in
+                # This prevents the signal from collapsing to a deterministic average
                 noise = torch.randn_like(signal)
                 sigma = ((1.0 - alpha_cum[n - 1]) / (1.0 - alpha_cum[n]) * beta[n]) ** 0.5
                 signal += sigma * noise
@@ -75,7 +86,8 @@ def generate_samples(model, config, num_samples, device, track_dir=None, global_
                 label = "final_0" if n == 0 else f"mid_{n}"
                 _save_snapshot(current_track_path, signal[0], noise_scale[n].item(), n, label, max_val)
 
-        signal = torch.clamp(signal, -1.0, 1.0)
+        # Force final output x_0 to match the dataset's specific normalized range
+        signal = torch.clamp(signal, 0.0, 1.0)
 
     return signal
 
