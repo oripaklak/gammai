@@ -9,7 +9,7 @@ from argparse import ArgumentParser
 # Add the project root to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from utils.helpers import load_config, setup_device, plot_and_save_spectra
+from utils.helpers import load_config, setup_device, plot_and_save_spectra, unnormalize
 from models.diffwave import DiffWave
 
 
@@ -130,8 +130,8 @@ def generate_and_process_samples(config, device, scaling_path, weights_path):
     generated_scaled = signal.cpu().numpy()
 
     max_val = np.load(scaling_path)
-    generated_log = generated_scaled * max_val
-    generated_counts = np.expm1(generated_log)
+    generated_counts = unnormalize(generated_scaled, max_val)
+    # guarantees the final output consists purely of non-negative integers
     generated_counts = np.clip(np.round(generated_counts), a_min=0, a_max=None)
 
     return generated_counts, save_dir, model_name
