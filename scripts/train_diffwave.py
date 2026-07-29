@@ -7,9 +7,11 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import wandb
+import torch.distributed as dist
 
 from torch.cuda import device_count
 from torch.multiprocessing import spawn
+from datetime import timedelta
 from torch.nn.parallel import DistributedDataParallel
 from tqdm import tqdm
 
@@ -138,20 +140,21 @@ class DiffWaveLearner:
         all_real_data = []
         all_fake_data = []
 
-        num_samples_to_generate = 256  # Increase to 512 or 1024 if you don't mind waiting longer
+        num_samples_to_generate = 256
         generated_so_far = 0
 
         print(f"\nGenerating {num_samples_to_generate} samples for evaluation...")
 
+        # --- FIX: Unwrap the DDP model for inference ---
+        model_to_eval = self.model.module if hasattr(self.model, 'module') else self.model
+
         with torch.no_grad():
             for eval_batch in self.dataset:
-                # Collect real spectra
                 real_batch = eval_batch['signal'].to(device)
                 batch_size = real_batch.size(0)
 
-                # Generate fake spectra passing down tracking information
                 fake_signal = generate_samples(
-                    model=self.model,
+                    model=model_to_eval,  # <-- Use the unwrapped model here
                     config=self.config,
                     num_samples=batch_size,
                     device=device,
@@ -253,14 +256,18 @@ class DiffWaveLearner:
                     if self.step % self.train_cfg['print_freq'] == 0:
                         self._write_summary(self.step, features, loss)
 
-                        # --- DiffWave Fast Sampling Evaluation & Tracking ---
-                        if self.step > 0 and self.step % self.train_cfg['checkpoint_freq'] == 0:
-                            self.save_to_checkpoint()
+                # --- DiffWave Fast Sampling Evaluation & Tracking ---
+                if self.step > 0 and self.step % self.train_cfg['checkpoint_freq'] == 0:
+                    # Only Rank 0 does the heavy lifting
+                    if self.is_master:
+                        self.save_to_checkpoint()
+                        self.model.eval()
+                        self.evaluate()
+                        self.model.train()
 
-                            # Track Reverse Process & Evaluate (Removing noise)
-                            self.model.eval()
-                            self.evaluate()
-                            self.model.train()
+                    # Both Rank 0 and Rank 1 hit this barrier
+                    if torch.distributed.is_initialized():
+                        dist.barrier()
 
                 self.step += 1
 
@@ -327,15 +334,27 @@ def _train_impl(replica_id, model, dataset, config, run_dir):
     learner = DiffWaveLearner(run_dir, model, dataset, opt, config)
     learner.is_master = (replica_id == 0)
 
-    # 1. Initialize tracking (Master only)
-    if learner.is_master and config['tracking']['wandb']['enabled']:
-        wandb.init(
-            project=config['experiment']['project_name'],
-            name=os.path.basename(run_dir),
-            config=config
-        )
+    # --- Count Trainable Parameters ---
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    # 2. Checkpoint restoration (OUTSIDE the wandb block)
+    # 1. Initialize tracking (Master only)
+    if learner.is_master:
+        # Print to console (this will show up in your terminal and standard log files)
+        print(f"\n{'='*40}")
+        print(f"Model Initialized!")
+        print(f"Total Trainable Parameters: {total_params:,}")
+        print(f"{'='*40}\n")
+
+        if config['tracking']['wandb']['enabled']:
+            wandb.init(
+                project=config['experiment']['project_name'],
+                name=os.path.basename(run_dir),
+                config=config
+            )
+            # Add the parameter count to the wandb config so you can sort/filter by it online!
+            wandb.config.update({"total_parameters": total_params})
+
+    # 2. Checkpoint restoration
     if config['training']['resume']:
         if learner.is_master:
             print("Attempting to resume from checkpoint...")
@@ -344,7 +363,7 @@ def _train_impl(replica_id, model, dataset, config, run_dir):
         if learner.is_master:
             print("Starting fresh from Step 0...")
 
-    # 3. Start training (OUTSIDE the wandb block, ALL GPUs must run this)
+    # 3. Start training (ALL GPUs must run this)
     learner.train()
 
     # 4. Finish tracking
@@ -361,7 +380,14 @@ def train(config, run_dir):
 def train_distributed(replica_id, replica_count, port, config, run_dir):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = str(port)
-    torch.distributed.init_process_group('nccl', rank=replica_id, world_size=replica_count)
+
+    # Increase the timeout to 60 minutes so evaluation has time to finish
+    dist.init_process_group(
+        'nccl',
+        rank=replica_id,
+        world_size=replica_count,
+        timeout=timedelta(minutes=60)
+    )
 
     dataset = from_path([config['paths']['data_path']], config, is_distributed=True)
     device = torch.device('cuda', replica_id)
@@ -392,8 +418,10 @@ def main():
     # Set Random Seed for Reproducibility
     set_seed(train_cfg["seed"])
 
-    # Auto-generate a unique checkpoint directory
-    run_name = f"diff_bs{train_cfg['batch_size']}_lr{train_cfg['learning_rate']}_ep{train_cfg['epochs']}"
+    # Auto-generate a unique checkpoint directory based on training AND model params
+    layers = config['model']['residual_layers']
+    channels = config['model']['residual_channels']
+    run_name = f"diff_L{layers}_C{channels}_bs{train_cfg['batch_size']}_lr{train_cfg['learning_rate']}_ep{train_cfg['epochs']}"
     run_dir = os.path.join(path_cfg['checkpoints_dir'], run_name)
 
     # Determine replica count based on YAML override or available GPUs

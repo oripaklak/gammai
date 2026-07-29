@@ -1,16 +1,24 @@
 import numpy as np
 from pathlib import Path
 
-# Define directories
-data_dir = Path("data/IAEA_HPGe/txt")
-output_file = Path("data/spectrum_matrix.npy")
+data_dirs = [
+    Path("data/IAEA_HPGe/2024/txt"),
+    Path("data/IAEA_HPGe/2023/txt")
+]
+output_file = Path("data/spectrum_matrix_2023_2024.npy")
 
-# Get a list of all text files
-txt_files = list(data_dir.glob("*.txt"))
+# Get a list of all text files from ALL directories
+txt_files = []
+for directory in data_dirs:
+    if directory.exists():
+        txt_files.extend(list(directory.glob("*.txt")))
+    else:
+        print(f"Warning: Directory {directory} not found.")
+
 N = len(txt_files)
 
 if N == 0:
-    print(f"No .txt files found in {data_dir}")
+    print("No .txt files found in any of the provided directories.")
 else:
     all_counts = []
     L = 0  # To track the maximum channel length
@@ -47,7 +55,8 @@ else:
         matrix[i, :len(counts)] = counts
 
     # 4. Save the matrix to an .npy file
+    output_file.parent.mkdir(parents=True, exist_ok=True) # Ensure the output folder exists
     np.save(output_file, matrix)
 
     print(f"Matrix successfully created and saved to {output_file}")
-    print(f"Shape of the matrix: N = {N} (examples), L = {L} (max channels)")
+    print(f"Shape of the combined matrix: N = {N} (examples), L = {L} (max channels)")
