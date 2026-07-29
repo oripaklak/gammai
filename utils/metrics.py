@@ -68,3 +68,55 @@ def calculate_polynomial_mmd(real_data, fake_data, degree=3, coef0=1):
 
     kid_equivalent = mmd_xx + mmd_yy - 2 * mmd_xy
     return float(kid_equivalent)
+
+
+if __name__ == "__main__":
+    # 1. Load the data
+    data_path = "data/spectrum_matrix_2023_2024.npy"
+    print(f"Loading data from {data_path}...")
+    try:
+        data = np.load(data_path).astype(np.float32)
+    except FileNotFoundError:
+        print(f"Error: Could not find {data_path}. Please check the path.")
+        exit()
+
+    # --- NEW: Apply the exact normalization from SignalDataset ---
+    print("Applying log1p and global max normalization...")
+    log_matrix = np.log1p(data)
+    max_val = np.max(log_matrix)
+    data = log_matrix / max_val
+    # -----------------------------------------------------------
+
+    print(f"Total data shape: {data.shape}")
+    N = data.shape[0]
+
+    if N < 4:
+        print("Error: Not enough data points to split and calculate metrics.")
+        exit()
+
+    # 2. Shuffle the data
+    np.random.seed(42)
+    indices = np.random.permutation(N)
+    shuffled_data = data[indices]
+
+    # 3. Split into two halves
+    midpoint = N // 2
+    half_a = shuffled_data[:midpoint]
+    half_b = shuffled_data[midpoint:]
+
+    print(f"Split data into Half A (shape: {half_a.shape}) and Half B (shape: {half_b.shape})")
+
+    target_components = 128
+    safe_components = min(target_components, half_a.shape[0])
+
+    if safe_components < target_components:
+        print(f"Note: Reduced PCA components to {safe_components} due to small sample size.")
+
+    # 4. Calculate Baselines
+    print("\n--- Calculating Baselines (Real vs Real) ---")
+
+    baseline_fd = calculate_frechet_distance(half_a, half_b, n_components=safe_components)
+    print(f"Baseline Fréchet Distance (FD): {baseline_fd:.6f}")
+
+    baseline_kid = calculate_polynomial_mmd(half_a, half_b)
+    print(f"Baseline Polynomial MMD (KID):  {baseline_kid:.6f}")
