@@ -80,7 +80,13 @@ class DiffWaveLearner:
         self.loss_fn = nn.L1Loss()
 
         # Load scaling factor for un-normalizing x_0 tracks
-        self.max_val = np.load(config['paths']['scaling_factor_path'])
+        self.max_val = self.dataset.dataset.max_val
+
+        # Save max_val to the scaling factor path specified in config
+        if self.is_master:
+            scaling_path = self.config["paths"]["scaling_factor_path"]
+            os.makedirs(os.path.dirname(scaling_path), exist_ok=True)
+            np.save(scaling_path, self.max_val)
     def state_dict(self):
         if hasattr(self.model, 'module') and isinstance(self.model.module, nn.Module):
             model_state = self.model.module.state_dict()
