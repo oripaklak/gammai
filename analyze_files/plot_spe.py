@@ -39,8 +39,8 @@ def read_spe_file(filepath):
 # SETUP AND DATA LOADING
 # ==========================================
 
-dataset_dir = "data/IAEA_HPGe/2023/spe"
-output_dir = "data/IAEA_HPGe/2023/plots"
+dataset_dir = "data/IAEA_HPGe/2024/spe"
+output_dir = "data/IAEA_HPGe/2024/plots"
 
 # Create output directory
 os.makedirs(output_dir, exist_ok=True)
@@ -60,14 +60,25 @@ for filepath in tqdm(all_spe_files, desc="Saving Plots"):
     counts = read_spe_file(filepath)
     file_num = get_file_number(filepath)
 
+    # Skip empty files to prevent plotting errors
+    if not counts:
+        continue
+
     plt.figure(figsize=(10, 5))
     plt.plot(counts, color='blue', linewidth=1)
 
-    # Keeping the Y-axis fixed (e.g., to the max count of the dataset)
-    # makes scrolling through the images much smoother.
-    # Adjust 'vmax' if your peaks are getting cut off.
     plt.yscale('log')
-    plt.ylim(1, 100000)  # Fixed limits stop the graph from jumping around
+
+    # Calculate min and max values dynamically for the Y-axis
+    # max(1, ...) ensures we never pass 0 or a negative number to the log scale
+    min_val = max(1, min(counts))
+    max_val = max(counts)
+
+    # Set Y-limits from the exact min to max (with a 20% buffer on top for visibility)
+    plt.ylim(min_val, max_val * 1.2)
+
+    # Optionally, lock the X-axis from 0 to the maximum channel number
+    plt.xlim(0, len(counts) - 1)
 
     plt.xlabel('Channel Number')
     plt.ylabel('Counts (Log Scale)')
@@ -75,7 +86,6 @@ for filepath in tqdm(all_spe_files, desc="Saving Plots"):
     plt.grid(True, which="both", ls="--", alpha=0.5)
 
     # Save the file with zero-padding (e.g., 0001_plot.png, 0002_plot.png)
-    # This guarantees your OS file explorer won't mix up 2 and 20.
     output_filename = os.path.join(output_dir, f"{file_num:04d}_plot.png")
 
     plt.savefig(output_filename, dpi=150, bbox_inches='tight')
