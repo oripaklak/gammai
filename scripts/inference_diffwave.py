@@ -98,22 +98,34 @@ def _save_snapshot(track_path, single_signal, noise_scale_val, loop_idx, label, 
     """Helper to generate visual plots of specific timesteps."""
     sig_np = single_signal.cpu().numpy()
 
-    # Removed un-normalization to keep the plot in the normalized domain
-    y_label = "Amplitude (Normalized)"
+    # --- NEW: Unnormalize and clean the signal if max_val is provided ---
+    if max_val is not None:
+        sig_np = unnormalize(sig_np, max_val)
+        sig_np = np.clip(np.round(sig_np), a_min=0, a_max=None)
+        y_label = "Counts (Log Scale)"
+    else:
+        y_label = "Amplitude (Normalized)"
+    # --------------------------------------------------------------------
 
     fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(sig_np)
+    ax.plot(sig_np, color='blue', linewidth=1)
+
+    # Set to log scale if we unnormalized, to match your standard plots
+    if max_val is not None:
+        ax.set_yscale('log')
+
     ax.set_title(
         f"Diffusion Generation Progress [{label.upper()}] | Loop Index: {loop_idx}\nNoise Scale: {noise_scale_val:.6f}")
-    ax.set_xlabel("Feature Dimension")
+    ax.set_xlabel("Channel")
     ax.set_ylabel(y_label)
+    ax.grid(True, which="both", ls="--", alpha=0.5)
     plt.tight_layout()
-    plt.savefig(os.path.join(track_path, f"{label}_plot.png"))
+
+    plt.savefig(os.path.join(track_path, f"{label}_plot.png"), dpi=300)
     plt.close(fig)
 
 
-def predict(config, device=torch.device('cuda'), track_dir=None):
-    """Loads weights from disk and calls the reusable generation loop."""
+def predict(config, device=torch.device('cuda'), track_dir=None, max_val=None):
     weights_path = config['generation']['model_path']
     num_samples = config['generation']['num_samples_to_generate']
 
@@ -125,27 +137,28 @@ def predict(config, device=torch.device('cuda'), track_dir=None):
     model.load_state_dict(checkpoint['model'])
     model.eval()
 
-    # Pass the track_dir down into the generator block
-    return generate_samples(model, config, num_samples, device, track_dir=track_dir, global_step="inference")
+    # --- NEW: Pass max_val into generate_samples ---
+    return generate_samples(model, config, num_samples, device, track_dir=track_dir, global_step="inference", max_val=max_val)
 
 
 def generate_and_process_samples(config, device, scaling_path, weights_path):
-    """Generates samples, reverses normalization, and prepares the output directory."""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     model_name = os.path.splitext(os.path.basename(weights_path))[0]
     run_name = os.path.basename(os.path.dirname(weights_path))
     save_dir = f"results/{run_name}/{model_name}_{timestamp}"
     os.makedirs(save_dir, exist_ok=True)
 
-    # Hardcode track_dir to None so standalone inference NEVER tracks intermediate steps
-    track_dir = None
+    config['generation']['num_tracking_steps'] = 100
+    track_dir = os.path.join(save_dir, "denoising_process")
+    os.makedirs(track_dir, exist_ok=True)
 
-    signal = predict(config=config, device=device, track_dir=track_dir)
-    generated_scaled = signal.cpu().numpy()
-
+    # --- NEW: Load max_val early and pass it into predict ---
     max_val = np.load(scaling_path)
+    signal = predict(config=config, device=device, track_dir=track_dir, max_val=max_val)
+    # --------------------------------------------------------
+
+    generated_scaled = signal.cpu().numpy()
     generated_counts = unnormalize(generated_scaled, max_val)
-    # guarantees the final output consists purely of non-negative integers
     generated_counts = np.clip(np.round(generated_counts), a_min=0, a_max=None)
 
     return generated_counts, save_dir, model_name
