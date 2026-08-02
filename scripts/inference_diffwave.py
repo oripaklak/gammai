@@ -5,6 +5,7 @@ import datetime
 import torch
 import matplotlib.pyplot as plt
 from argparse import ArgumentParser
+from tqdm import tqdm
 
 # Add the project root to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -64,7 +65,8 @@ def generate_samples(model, config, num_samples, device, track_dir=None, global_
             track_indices = set()
 
         # Reverse diffusion loop: gradually denoise from step T down to 0
-        for n in range(len(alpha) - 1, -1, -1):
+        # <-- Wrapped range() with tqdm here -->
+        for n in tqdm(range(len(alpha) - 1, -1, -1), desc="Denoising Progress"):
             if n == len(alpha) - 1 and n in track_indices:
                 _save_snapshot(current_track_path, signal[0], noise_scale[n].item(), n, "initial_T")
 
@@ -147,6 +149,7 @@ def generate_and_process_samples(config, device, scaling_path, weights_path):
     generated_counts = np.clip(np.round(generated_counts), a_min=0, a_max=None)
 
     return generated_counts, save_dir, model_name
+
 
 def main(args):
     # Load and merge configuration blocks
