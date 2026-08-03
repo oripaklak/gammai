@@ -139,6 +139,30 @@ class DiffWaveLearner:
         except FileNotFoundError:
             return False
 
+    def load_pretrained_weights(self, filepath):
+        """Loads only the model weights for fine-tuning, ignoring optimizer and step state."""
+        try:
+            # Load checkpoint to CPU first to avoid VRAM spikes
+            checkpoint = torch.load(filepath, map_location='cpu')
+
+            # Extract just the model state (handles both dicts and raw states)
+            if 'model' in checkpoint:
+                model_state = checkpoint['model']
+            else:
+                model_state = checkpoint
+
+            # Load into the model (unwrapping DDP if necessary)
+            if hasattr(self.model, 'module') and isinstance(self.model.module, nn.Module):
+                self.model.module.load_state_dict(model_state)
+            else:
+                self.model.load_state_dict(model_state)
+
+            return True
+        except Exception as e:
+            if self.is_master:
+                print(f"Failed to load pre-trained weights from {filepath}. Error: {e}")
+            raise
+
     def evaluate(self):
         """Generates fast samples and calculates FID/KID metrics."""
         device = next(self.model.parameters()).device
@@ -360,14 +384,22 @@ def _train_impl(replica_id, model, dataset, config, run_dir):
             # Add the parameter count to the wandb config so you can sort/filter by it online!
             wandb.config.update({"total_parameters": total_params})
 
-    # 2. Checkpoint restoration
-    if config['training']['resume']:
-        if learner.is_master:
-            print("Attempting to resume from checkpoint...")
-        learner.restore_from_checkpoint()
-    else:
-        if learner.is_master:
-            print("Starting fresh from Step 0...")
+        # 2. Checkpoint restoration or Pre-trained weights initialization
+        if config['training'].get('resume', False):
+            if learner.is_master:
+                print("Attempting to resume full training state from checkpoint...")
+            learner.restore_from_checkpoint()
+
+        elif config['training'].get('use_pretrained_weights', False):
+            weight_path = config['paths'].get('pretrained_weights_path', '')
+            if learner.is_master:
+                print(f"Initializing model with pre-trained weights from: {weight_path}")
+                print("Starting with a fresh optimizer from Step 0...")
+            learner.load_pretrained_weights(weight_path)
+
+        else:
+            if learner.is_master:
+                print("Starting completely fresh from Step 0 with random weights...")
 
     # 3. Start training (ALL GPUs must run this)
     learner.train()
