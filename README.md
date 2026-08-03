@@ -27,15 +27,23 @@ conda activate gammai
 Ensure your project follows this hierarchy before running the code:
 ```text
 project_root/
-+-- analyze_files/           <-- Scripts for parsing and visualizing raw experimental data
-+-- checkpoints/             <-- Automatically generated model weights during training
-+-- configs/                 <-- Centralized YAML configuration files for models
-+-- data/                    <-- Raw data, text files, and unified matrix files
-+-- models/                  <-- PyTorch model architectures (VAE, DiffWave)
-+-- results/                 <-- Generated spectra arrays and plots from inference
-+-- scripts/                 <-- Core execution scripts for training and inference
-+-- utils/                   <-- Shared helper functions, metrics, and dataloaders
-+-- README.md
++-- analyze_files/           <-- Scripts for parsing, converting, and visualizing raw experimental data (.cnf, .spe, .npy)
++-- checkpoints/             <-- Automatically generated model weights and training artifacts
+|   +-- diff_param200M_L36_C800_bs16_lr0.0002_ep400/  <-- Example of a specific training run directory
+|       +-- tracked_signals/ <-- Visual comparisons of signals saved during training and evaluation
+|       |   +-- eval/        <-- Generated plots from the fast-sampling evaluation loop
+|       |   +-- train/       <-- Forward diffusion process plots (e.g., clean x_0 vs noisy x_100)
+|       +-- wandb_id.txt     <-- Cached WandB run ID to seamlessly stitch resumed runs
+|       +-- weights-400.pt   <-- Step-specific checkpoint (contains weights, optimizer, and RNG states)
+|       +-- weights.pt       <-- Symlink pointing to the most recent step checkpoint
++-- configs/                 <-- Centralized YAML configuration files (split into /experiments and /models)
++-- data/                    <-- Raw data folders (CTBT, IAEA, MCNP) and unified .npy matrix/scaling files
++-- models/                  <-- PyTorch model architectures (vae.py, diffwave.py)
++-- results/                 <-- Generated spectra arrays and plots organized by specific inference runs
++-- scripts/                 <-- Core execution scripts for training, inference, and latent space visualization
++-- utils/                   <-- Shared helper functions (helpers.py), metrics.py, and dataloaders (dataset.py)
++-- wandb/                   <-- Weights & Biases local sync directories, debug logs, and crash reports
++-- README.md                <-- Project documentation
 ```
 
 ## Data Processing Pipeline
