@@ -17,9 +17,9 @@ training:
   max_grad_norm: null
   checkpoint_freq: 5000 # steps
   print_freq: 60 # steps
-  resume: false
   keep_last_n_checkpoints: 10
-  use_pretrained_weights: true
+  resume: true # Use for continuing crashed/stopped runs. Restores the entire state (weights, optimizer, scaler, step count)
+  use_pretrained_weights: false # Use for fine-tuning. Loads ONLY the neural network weights
 
 generation:
   model_path: "checkpoints/diff_L36_C256_bs64_lr0.0002_ep2000/weights-55000.pt"
@@ -36,5 +36,5 @@ tracking:
 paths:
   data_path: "data/spectrum_matrix_2023_2024.npy"
   scaling_factor_path: "data/scaling_factor_2023_2024.npy"
-  pretrained_weights_path: "results/run_name/weights-100000.pt"
+  pretrained_weights_path: "checkpoints/diff_L36_C256_bs64_lr0.0002_ep2000/weights-55000.pt"
   checkpoints_dir: "checkpoints"
