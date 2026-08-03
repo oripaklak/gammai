@@ -363,44 +363,66 @@ def _train_impl(replica_id, model, dataset, config, run_dir):
 
     learner = DiffWaveLearner(run_dir, model, dataset, opt, config)
     learner.is_master = (replica_id == 0)
+
+    # --- Fetch Trainable Parameters from config ---
     total_params = config['model']['total_params']
 
     # 1. Initialize tracking (Master only)
     if learner.is_master:
+        is_resuming = config['training'].get('resume', False)
+
+        # Setup WandB ID logic for resuming
+        wandb_id_path = os.path.join(run_dir, "wandb_id.txt")
+        wandb_run_id = None
+
+        # If resuming, try to fetch the previous WandB ID
+        if is_resuming and os.path.exists(wandb_id_path):
+            with open(wandb_id_path, "r") as f:
+                wandb_run_id = f.read().strip()
+            print(f"Found existing WandB run ID: {wandb_run_id}")
+
         # Turn W&B on
         if config['tracking']['wandb']['enabled']:
-            wandb.init(
-                project=config['experiment']['project_name'],
-                name=os.path.basename(run_dir),
-                config=config
-            )
-            # Add the parameter count to the wandb config so you can sort/filter by it online!
+            wandb_kwargs = {
+                "project": config['experiment']['project_name'],
+                "name": os.path.basename(run_dir),
+                "config": config
+            }
+
+            # Inject the old ID to stitch the runs together
+            if wandb_run_id:
+                wandb_kwargs["id"] = wandb_run_id
+                wandb_kwargs["resume"] = "allow"
+
+            wandb.init(**wandb_kwargs)
+
+            # If starting fresh, save the newly generated ID for the future
+            if not wandb_run_id and wandb.run is not None:
+                with open(wandb_id_path, "w") as f:
+                    f.write(wandb.run.id)
+
+            # Add the parameter count to the wandb config
             wandb.config.update({"total_parameters": total_params})
 
         # Print to console
-        print(f"\n{'='*40}")
+        print(f"\n{'=' * 40}")
         print(f"Model Initialized!")
         print(f"Total Trainable Parameters: {total_params:,}")
-        print(f"{'='*40}\n")
-
-
+        print(f"{'=' * 40}\n")
 
         # 2. Checkpoint restoration or Pre-trained weights initialization
-        if config['training'].get('resume', False):
-            if learner.is_master:
-                print("Attempting to resume full training state from checkpoint...")
+        if is_resuming:
+            print("Attempting to resume full training state from checkpoint...")
             learner.restore_from_checkpoint()
 
         elif config['training'].get('use_pretrained_weights', False):
             weight_path = config['paths'].get('pretrained_weights_path', '')
-            if learner.is_master:
-                print(f"Initializing model with pre-trained weights from: {weight_path}")
-                print("Starting with a fresh optimizer from Step 0...")
+            print(f"Initializing model with pre-trained weights from: {weight_path}")
+            print("Starting with a fresh optimizer from Step 0...")
             learner.load_pretrained_weights(weight_path)
 
         else:
-            if learner.is_master:
-                print("Starting completely fresh from Step 0 with random weights...")
+            print("Starting completely fresh from Step 0 with random weights...")
 
     # 3. Start training (ALL GPUs must run this)
     learner.train()
