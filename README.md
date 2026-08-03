@@ -60,11 +60,18 @@ python analyze_files/spe2txt.py
 ```
 
 **4. Build and save the data matrix:**
-This script reads the converted text files and saves that data into a single `.npy` matrix file for machine learning or statistical analysis.
+This script reads the converted `.txt` files and saves that data into a single `.npy` matrix file for machine learning or statistical analysis.
 ```bash
 python analyze_files/create_save_data_matrix.py
 ```
 ## Model Training
+Before training your model, you can calculate the baseline Fréchet Distance (FD) and Kernel Inception Distance (KID) scores. This compares real data against real data to establish the "perfect" target scores for your dataset. 
+
+Run the metrics script using the command below. Note: Update the `data_path` variable inside the script if your dataset is stored in a different location.
+
+```bash
+python utils/metrics.py
+```
 
 Both the VAE and DiffWave models are controlled entirely via their respective .yaml configuration files found in the configs/ directory.
 

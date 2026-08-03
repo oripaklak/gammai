@@ -19,7 +19,7 @@ from tqdm import tqdm
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils.dataset import from_path
-from utils.helpers import load_config, set_seed, count_parameters, format_param_count
+from utils.helpers import load_config, set_seed, count_parameters, format_param_count, register_graceful_shutdown
 from utils.metrics import calculate_frechet_distance, calculate_polynomial_mmd
 from models.diffwave import DiffWave
 from inference_diffwave import generate_samples
@@ -99,6 +99,9 @@ class DiffWaveLearner:
                           self.optimizer.state_dict().items()},
             'config': self.config,
             'scaler': self.scaler.state_dict(),
+            'torch_rng_state': torch.get_rng_state(),
+            'cuda_rng_state': torch.cuda.get_rng_state(),
+            'numpy_rng_state': np.random.get_state(),
         }
 
     def load_state_dict(self, state_dict):
@@ -110,6 +113,11 @@ class DiffWaveLearner:
         self.scaler.load_state_dict(state_dict['scaler'])
         self.step = state_dict['step']
 
+        # Restore RNG states
+        if 'torch_rng_state' in state_dict:
+            torch.set_rng_state(state_dict['torch_rng_state'])
+            torch.cuda.set_rng_state(state_dict['cuda_rng_state'])
+            np.random.set_state(state_dict['numpy_rng_state'])
     def save_to_checkpoint(self, filename='weights'):
         save_basename = f'{filename}-{self.step}.pt'
         save_name = f'{self.model_dir}/{save_basename}'
@@ -271,33 +279,61 @@ class DiffWaveLearner:
     def train(self):
         device = next(self.model.parameters()).device
 
-        for epoch in range(self.train_cfg['epochs']):
+        # --- 1. Find WandB's Last Logged Step ---
+        wandb_catchup_step = 0
+        if self.is_master and self.track_cfg['enabled']:
+            import wandb
+            if wandb.run is not None:
+                wandb_catchup_step = wandb.run.step
+                if self.step < wandb_catchup_step:
+                    print(f"PyTorch is at step {self.step}, but WandB is at {wandb_catchup_step}.")
+                    print("Silencing logs and skipping evaluations until PyTorch catches up...")
+
+        # --- 2. Calculate Dataloader Position ---
+        epoch_length = len(self.dataset)
+        start_epoch = self.step // epoch_length
+        batches_to_skip = self.step % epoch_length
+
+        for epoch in range(start_epoch, self.train_cfg['epochs']):
+            # If using DistributedDataParallel, ensure the sampler gets the current epoch seed
+            if hasattr(self.dataset, 'sampler') and hasattr(self.dataset.sampler, 'set_epoch'):
+                self.dataset.sampler.set_epoch(epoch)
+
             iterator = tqdm(self.dataset,
                             desc=f"Epoch {epoch + 1}/{self.train_cfg['epochs']}") if self.is_master else self.dataset
 
-            for features in iterator:
+            for i, features in enumerate(iterator):
+                # --- 3. Fast-Forward Dataloader ---
+                # If resuming mid-epoch, skip the batches we already processed before the checkpoint
+                if epoch == start_epoch and i < batches_to_skip:
+                    continue
+
                 features = _nested_map(features, lambda x: x.to(device) if isinstance(x, torch.Tensor) else x)
                 loss = self.train_step(features)
 
                 if torch.isnan(loss).any():
                     raise RuntimeError(f'Detected NaN loss at step {self.step}.')
 
+                # --- 4. Synchronized Logging ---
                 if self.is_master:
                     if self.step % self.train_cfg['print_freq'] == 0:
-                        self._write_summary(self.step, features, loss)
+                        # Only log to WandB if we have surpassed the steps from the aborted run
+                        if self.step >= wandb_catchup_step:
+                            self._write_summary(self.step, features, loss)
 
                 # --- DiffWave Fast Sampling Evaluation & Tracking ---
                 if self.step > 0 and self.step % self.train_cfg['checkpoint_freq'] == 0:
-                    # Only Rank 0 does the heavy lifting
                     if self.is_master:
                         self.save_to_checkpoint()
-                        self.model.eval()
-                        self.evaluate()
-                        self.model.train()
 
-                    # Both Rank 0 and Rank 1 hit this barrier
-                    if torch.distributed.is_initialized():
-                        dist.barrier()
+                        # Skip expensive evaluation if WandB already has the data for this step
+                        if self.step >= wandb_catchup_step:
+                            self.model.eval()
+                            self.evaluate()
+                            self.model.train()
+
+                if torch.distributed.is_initialized():
+                    dist.barrier()
 
                 self.step += 1
 
@@ -363,8 +399,6 @@ def _train_impl(replica_id, model, dataset, config, run_dir):
 
     learner = DiffWaveLearner(run_dir, model, dataset, opt, config)
     learner.is_master = (replica_id == 0)
-
-    # --- Fetch Trainable Parameters from config ---
     total_params = config['model']['total_params']
 
     # 1. Initialize tracking (Master only)
@@ -423,6 +457,9 @@ def _train_impl(replica_id, model, dataset, config, run_dir):
 
         else:
             print("Starting completely fresh from Step 0 with random weights...")
+
+    # Register the emergency save handler
+    register_graceful_shutdown(learner, config)
 
     # 3. Start training (ALL GPUs must run this)
     learner.train()

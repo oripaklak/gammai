@@ -10,12 +10,12 @@ hardware:
   fp16: false
 
 training:
-  batch_size: 64
-  epochs: 4000
+  batch_size: 16
+  epochs: 400
   learning_rate: 0.0002
   seed: 40
   max_grad_norm: null
-  checkpoint_freq: 5000 # steps
+  checkpoint_freq: 1000 # steps
   print_freq: 60 # steps
   keep_last_n_checkpoints: 10
   resume: true # Use for continuing crashed/stopped runs. Restores the entire state (weights, optimizer, scaler, step count)

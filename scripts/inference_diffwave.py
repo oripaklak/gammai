@@ -27,6 +27,7 @@ def generate_samples(model, config, num_samples, device, track_dir=None, global_
         T = mod_cfg['T']
         beta_init = mod_cfg['beta_init']
         beta_final = mod_cfg['beta_final']
+        beta_final = mod_cfg['beta_final']
 
         # Define noise variance schedules (beta)
         training_noise_schedule = np.linspace(beta_init, beta_final, T, dtype=np.float32)
@@ -58,8 +59,19 @@ def generate_samples(model, config, num_samples, device, track_dir=None, global_
         noise_scale = torch.from_numpy(alpha_cum ** 0.5).float().to(device)
 
         if track_dir and num_tracking_steps > 0:
-            track_indices = set(np.linspace(len(alpha) - 1, 0, num_tracking_steps, dtype=int))
-            current_track_path = os.path.join(track_dir, f"step_{global_step}")
+            # 1. The last 10 steps of generation (indices 9 down to 0)
+            last_10_steps = list(range(10))
+
+            # 2. 5 extra steps further out (you can change these numbers to whatever you want)
+            # For example: step 199 (start), 150, 100, 50, and 20
+            extra_5_steps = [199, 150, 100, 50, 20]
+            track_indices = set(last_10_steps + extra_5_steps)
+
+            if global_step == "inference":
+                current_track_path = track_dir
+            else:
+                current_track_path = os.path.join(track_dir, f"step_{global_step}")
+
             os.makedirs(current_track_path, exist_ok=True)
         else:
             track_indices = set()
@@ -68,7 +80,7 @@ def generate_samples(model, config, num_samples, device, track_dir=None, global_
         # <-- Wrapped range() with tqdm here -->
         for n in tqdm(range(len(alpha) - 1, -1, -1), desc="Denoising Progress"):
             if n == len(alpha) - 1 and n in track_indices:
-                _save_snapshot(current_track_path, signal[0], noise_scale[n].item(), n, "initial_T")
+                _save_snapshot(current_track_path, signal[0], noise_scale[n].item(), n, "initial_T", max_val)
 
             # c1 and c2 are constants for the reverse step mean equation
             c1 = 1 / alpha[n] ** 0.5
@@ -148,7 +160,6 @@ def generate_and_process_samples(config, device, scaling_path, weights_path):
     save_dir = f"results/{run_name}/{model_name}_{timestamp}"
     os.makedirs(save_dir, exist_ok=True)
 
-    config['generation']['num_tracking_steps'] = 100
     track_dir = os.path.join(save_dir, "denoising_process")
     os.makedirs(track_dir, exist_ok=True)
 

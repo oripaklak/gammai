@@ -4,7 +4,32 @@ import random
 import numpy as np
 import os
 import matplotlib.pyplot as plt
+import signal
+import sys
 
+
+def register_graceful_shutdown(learner, config):
+    """Registers signal handlers to save a checkpoint on Ctrl+C or kill."""
+
+    def graceful_shutdown(sig, frame):
+        if learner.is_master:
+            print(f"\n\n[Rank 0] Termination signal ({sig}) detected!")
+            print(f"Saving emergency checkpoint at Step {learner.step} before exiting...")
+
+            # Force a save right now
+            learner.save_to_checkpoint()
+
+            if config['tracking']['wandb']['enabled']:
+                import wandb
+                wandb.finish()
+
+            print("Emergency save complete. Exiting safely.")
+
+        sys.exit(0)
+
+    # Attach the handler to Ctrl+C (SIGINT) and kill commands (SIGTERM)
+    signal.signal(signal.SIGINT, graceful_shutdown)
+    signal.signal(signal.SIGTERM, graceful_shutdown)
 
 def load_config(exp_path, model_path):
     """Loads and merges the experiment and model YAML configuration files."""
@@ -54,10 +79,10 @@ def count_parameters(model):
 def format_param_count(num_params):
     """Formats a parameter count into a readable string like '15k' or '20M'."""
     if num_params >= 1_000_000:
-        return f"param{num_params / 1_000_000:.0f}M".replace(".0M", "M")
+        return f"{num_params / 1_000_000:.0f}M".replace(".0M", "M")
     elif num_params >= 1_000:
-        return f"param{num_params / 1_000:.0f}k".replace(".0k", "k")
-    return f"param{num_params}"
+        return f"{num_params / 1_000:.0f}k".replace(".0k", "k")
+    return f"{num_params}"
 
 def plot_and_save_spectra(generated_counts, save_dir, model_name):
     """Plots and saves a batch of generated spectra to the specified directory."""

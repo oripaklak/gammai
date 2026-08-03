@@ -3,7 +3,7 @@
 # ==============================================================================
 model:
   residual_layers: 36
-  residual_channels: 256 # C
+  residual_channels: 800 # C
   dilation_cycle_length: 12 # note: residual_layers / dilation_cycle_length = number of repeating blocks
   unconditional: true
   signal_len: 16384
