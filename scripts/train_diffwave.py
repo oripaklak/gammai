@@ -369,12 +369,7 @@ def _train_impl(replica_id, model, dataset, config, run_dir):
 
     # 1. Initialize tracking (Master only)
     if learner.is_master:
-        # Print to console (this will show up in your terminal and standard log files)
-        print(f"\n{'='*40}")
-        print(f"Model Initialized!")
-        print(f"Total Trainable Parameters: {total_params:,}")
-        print(f"{'='*40}\n")
-
+        # Turn W&B on
         if config['tracking']['wandb']['enabled']:
             wandb.init(
                 project=config['experiment']['project_name'],
@@ -383,6 +378,14 @@ def _train_impl(replica_id, model, dataset, config, run_dir):
             )
             # Add the parameter count to the wandb config so you can sort/filter by it online!
             wandb.config.update({"total_parameters": total_params})
+
+        # Print to console
+        print(f"\n{'='*40}")
+        print(f"Model Initialized!")
+        print(f"Total Trainable Parameters: {total_params:,}")
+        print(f"{'='*40}\n")
+
+
 
         # 2. Checkpoint restoration or Pre-trained weights initialization
         if config['training'].get('resume', False):
