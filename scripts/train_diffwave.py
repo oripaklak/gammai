@@ -19,7 +19,7 @@ from tqdm import tqdm
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils.dataset import from_path
-from utils.helpers import load_config, set_seed
+from utils.helpers import load_config, set_seed, count_parameters, format_param_count
 from utils.metrics import calculate_frechet_distance, calculate_polynomial_mmd
 from models.diffwave import DiffWave
 from inference_diffwave import generate_samples
@@ -363,9 +363,7 @@ def _train_impl(replica_id, model, dataset, config, run_dir):
 
     learner = DiffWaveLearner(run_dir, model, dataset, opt, config)
     learner.is_master = (replica_id == 0)
-
-    # --- Count Trainable Parameters ---
-    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params = config['model']['total_params']
 
     # 1. Initialize tracking (Master only)
     if learner.is_master:
@@ -459,10 +457,18 @@ def main():
     # Set Random Seed for Reproducibility
     set_seed(train_cfg["seed"])
 
+    # Count number of parameters
+    temp_model = DiffWave(config)
+    total_params = count_parameters(temp_model)
+    # Save it to config so we don't have to calculate it again in _train_impl
+    config['model']['total_params'] = total_params
+    del temp_model  # Free up memory immediatel
+
     # Auto-generate a unique checkpoint directory based on training AND model params
     layers = config['model']['residual_layers']
     channels = config['model']['residual_channels']
-    run_name = f"diff_L{layers}_C{channels}_bs{train_cfg['batch_size']}_lr{train_cfg['learning_rate']}_ep{train_cfg['epochs']}"
+    param_str = format_param_count(total_params)
+    run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{train_cfg['batch_size']}_lr{train_cfg['learning_rate']}_ep{train_cfg['epochs']}"
     run_dir = os.path.join(path_cfg['checkpoints_dir'], run_name)
 
     # Determine replica count based on YAML override or available GPUs

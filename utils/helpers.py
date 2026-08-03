@@ -51,6 +51,13 @@ def set_seed(seed):
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+def format_param_count(num_params):
+    """Formats a parameter count into a readable string like '15k' or '20M'."""
+    if num_params >= 1_000_000:
+        return f"param{num_params / 1_000_000:.0f}M".replace(".0M", "M")
+    elif num_params >= 1_000:
+        return f"param{num_params / 1_000:.0f}k".replace(".0k", "k")
+    return f"param{num_params}"
 
 def plot_and_save_spectra(generated_counts, save_dir, model_name):
     """Plots and saves a batch of generated spectra to the specified directory."""
