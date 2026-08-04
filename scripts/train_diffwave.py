@@ -141,7 +141,7 @@ class DiffWaveLearner:
 
     def restore_from_checkpoint(self, filename='weights'):
         try:
-            checkpoint = torch.load(f'{self.model_dir}/{filename}.pt')
+            checkpoint = torch.load(f'{self.model_dir}/{filename}.pt', weights_only=False)
             self.load_state_dict(checkpoint)
             return True
         except FileNotFoundError:
@@ -151,7 +151,7 @@ class DiffWaveLearner:
         """Loads only the model weights for fine-tuning, ignoring optimizer and step state."""
         try:
             # Load checkpoint to CPU first to avoid VRAM spikes
-            checkpoint = torch.load(filepath, map_location='cpu')
+            checkpoint = torch.load(filepath, map_location='cpu', weights_only=False)
 
             # Extract just the model state (handles both dicts and raw states)
             if 'model' in checkpoint:
@@ -172,54 +172,71 @@ class DiffWaveLearner:
             raise
 
     def evaluate(self):
-        """Generates fast samples and calculates FID/KID metrics."""
+        """Generates fast samples and calculates FID/KID metrics using optimized batch sizes."""
         device = next(self.model.parameters()).device
-
-        all_real_data = []
-        all_fake_data = []
-
         num_samples_to_generate = 256
+
+        # --- 0. Isolate RNG State (Crucial for perfect resuming!) ---
+        torch_rng_state = torch.get_rng_state()
+        cuda_rng_state = torch.cuda.get_rng_state()
+
+        # NOTE: 128 might cause CUDA Out of Memory. If it crashes, lower this to 64 or 32.
+        eval_batch_size = 64
+
+        print(f"\nGenerating {num_samples_to_generate} samples for evaluation (Eval Batch Size: {eval_batch_size})...")
+
+        model_to_eval = self.model.module if hasattr(self.model, 'module') else self.model
+        model_to_eval.eval()
+
+        # --- 1. Collect EXACTLY 256 Real Samples ---
+        all_real_data = []
+        real_collected = 0
+
+        for eval_batch in self.dataset:
+            real_batch = eval_batch['signal']
+            all_real_data.append(real_batch.cpu().numpy())
+            real_collected += real_batch.size(0)
+
+            if real_collected >= num_samples_to_generate:
+                break
+
+        # Slice to exactly 256
+        real_np = np.concatenate(all_real_data, axis=0)[:num_samples_to_generate]
+
+        # --- 2. Generate EXACTLY 256 Fake Samples ---
+        all_fake_data = []
         generated_so_far = 0
 
-        print(f"\nGenerating {num_samples_to_generate} samples for evaluation...")
-
-        # --- FIX: Unwrap the DDP model for inference ---
-        model_to_eval = self.model.module if hasattr(self.model, 'module') else self.model
-
         with torch.no_grad():
-            for eval_batch in self.dataset:
-                real_batch = eval_batch['signal'].to(device)
-                batch_size = real_batch.size(0)
+            while generated_so_far < num_samples_to_generate:
+                # This ensures the last batch doesn't generate more than we need
+                current_batch_size = min(eval_batch_size, num_samples_to_generate - generated_so_far)
+
+                # Track signals only on the first batch
+                current_track_dir = self.track_dir_eval if generated_so_far == 0 else None
 
                 fake_signal = generate_samples(
-                    model=model_to_eval,  # <-- Use the unwrapped model here
+                    model=model_to_eval,
                     config=self.config,
-                    num_samples=batch_size,
+                    num_samples=current_batch_size,
                     device=device,
-                    track_dir=self.track_dir_eval,
+                    track_dir=current_track_dir,
                     global_step=self.step,
                     max_val=self.max_val
                 )
 
-                all_real_data.append(real_batch.cpu().numpy())
                 all_fake_data.append(fake_signal.cpu().numpy())
+                generated_so_far += current_batch_size
 
-                generated_so_far += batch_size
+        fake_np = np.concatenate(all_fake_data, axis=0)
 
-                # Stop once we reach the target amount to avoid stalling training for hours
-                if generated_so_far >= num_samples_to_generate:
-                    break
-
-        # Concatenate lists into a single NumPy array and slice to the exact target size
-        real_np = np.concatenate(all_real_data, axis=0)[:num_samples_to_generate]
-        fake_np = np.concatenate(all_fake_data, axis=0)[:num_samples_to_generate]
-
+        # --- 3. Calculate Metrics ---
         try:
-            # Calculate metrics on the accumulated dataset
             fd_score = calculate_frechet_distance(real_np, fake_np)
             kid_score = calculate_polynomial_mmd(real_np, fake_np)
 
             if self.track_cfg['enabled']:
+                import wandb
                 wandb.log({
                     "eval/FID": fd_score,
                     "eval/KID": kid_score
@@ -228,6 +245,10 @@ class DiffWaveLearner:
             print(f"--> Eval Step {self.step} | FD: {fd_score:.4f} | KD: {kid_score:.4f}")
         except Exception as e:
             print(f"\nWarning: Failed to calculate evaluation metrics. Error: {e}")
+
+        # --- 4. Restore RNG State ---
+        torch.set_rng_state(torch_rng_state)
+        torch.cuda.set_rng_state(cuda_rng_state)
 
     def track_forward_process(self, clean_signal, noisy_signal, noise, t_val, global_step):
         """Plots the actual noisy signal vs original clean signal for comparison."""
@@ -484,7 +505,7 @@ def train_distributed(replica_id, replica_count, port, config, run_dir):
         'nccl',
         rank=replica_id,
         world_size=replica_count,
-        timeout=timedelta(minutes=60)
+        timeout=timedelta(minutes=120)
     )
 
     dataset = from_path([config['paths']['data_path']], config, is_distributed=True)
