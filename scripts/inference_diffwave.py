@@ -27,7 +27,6 @@ def generate_samples(model, config, num_samples, device, track_dir=None, global_
         T = mod_cfg['T']
         beta_init = mod_cfg['beta_init']
         beta_final = mod_cfg['beta_final']
-        beta_final = mod_cfg['beta_final']
 
         # Define noise variance schedules (beta)
         training_noise_schedule = np.linspace(beta_init, beta_final, T, dtype=np.float32)
@@ -46,14 +45,23 @@ def generate_samples(model, config, num_samples, device, track_dir=None, global_
         # Map inference steps to fractional training steps (interpolation for fast sampling)
         T_steps = []
         for s in range(len(inference_noise_schedule)):
+            step_found = False
             for t in range(len(training_noise_schedule) - 1):
                 if talpha_cum[t + 1] <= alpha_cum[s] <= talpha_cum[t]:
                     twiddle = (talpha_cum[t] ** 0.5 - alpha_cum[s] ** 0.5) / (
                             talpha_cum[t] ** 0.5 - talpha_cum[t + 1] ** 0.5)
                     T_steps.append(t + twiddle)
+                    step_found = True
                     break
-        T_steps = np.array(T_steps, dtype=np.float32)
 
+            # --- NEW: Fallback for floating-point rounding misses at the edges ---
+            if not step_found:
+                if alpha_cum[s] >= talpha_cum[0]:
+                    T_steps.append(0.0)
+                else:
+                    T_steps.append(float(T - 1))
+
+        T_steps = np.array(T_steps, dtype=np.float32)
         # Start inference with pure Gaussian noise (x_T)
         signal = torch.randn(num_samples, signal_len, device=device)
         noise_scale = torch.from_numpy(alpha_cum ** 0.5).float().to(device)
@@ -144,7 +152,7 @@ def predict(config, device=torch.device('cuda'), track_dir=None, max_val=None):
     if not os.path.exists(weights_path):
         raise FileNotFoundError(f"Weights not found at {weights_path}")
 
-    checkpoint = torch.load(weights_path, map_location=device)
+    checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
     model = DiffWave(config).to(device)
     model.load_state_dict(checkpoint['model'])
     model.eval()
