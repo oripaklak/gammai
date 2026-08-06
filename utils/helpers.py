@@ -45,7 +45,7 @@ def load_config(exp_path, model_path):
     return config
 
 
-def setup_device(hardware_cfg):
+def setup_device(hardware_cfg, mode="training"):
     """Configures the torch device based on configuration."""
     num_gpus = hardware_cfg.get("num_gpus", 0)
     device_id = hardware_cfg.get("device_id", 0)
@@ -53,12 +53,13 @@ def setup_device(hardware_cfg):
     if num_gpus > 0 and torch.cuda.is_available():
         device_str = f"cuda:{device_id}"
         if num_gpus > 1 and torch.cuda.device_count() > 1:
-            print(f"Using {num_gpus} GPUs for training (DataParallel available).")
+            # Replaced "training" with the {mode} variable
+            print(f"Using {num_gpus} GPUs for {mode} (DataParallel available).")
         else:
-            print(f"Training on single GPU: {device_str}")
+            print(f"Running {mode} on single GPU: {device_str}")
         return torch.device(device_str)
     else:
-        print("Training on CPU...")
+        print(f"Running {mode} on CPU...")
         return torch.device("cpu")
 
 
