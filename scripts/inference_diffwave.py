@@ -62,6 +62,9 @@ def generate_samples(model, config, num_samples, device, track_dir=None, global_
                     T_steps.append(float(T - 1))
 
         T_steps = np.array(T_steps, dtype=np.float32)
+        if fast_sampling:
+            print(f"Fast Sampling T_steps: {T_steps}")
+
         # Start inference with pure Gaussian noise (x_T)
         signal = torch.randn(num_samples, signal_len, device=device)
         noise_scale = torch.from_numpy(alpha_cum ** 0.5).float().to(device)
@@ -164,6 +167,17 @@ def predict(config, device=torch.device('cuda'), track_dir=None, max_val=None):
 def generate_and_process_samples(config, device, scaling_path, weights_path):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     model_name = os.path.splitext(os.path.basename(weights_path))[0]
+
+    # --- NEW: Check fast sampling and update model_name ---
+    gen_cfg = config['generation']
+    fast_sampling = gen_cfg.get('fast_sampling', True)
+
+    if fast_sampling:
+        inference_schedule = config['model'].get('inference_noise_schedule', [])
+        num_fast_steps = len(inference_schedule)
+        model_name = f"{model_name}_T={num_fast_steps}"
+    # ------------------------------------------------------
+
     run_name = os.path.basename(os.path.dirname(weights_path))
     save_dir = f"results/{run_name}/{model_name}_{timestamp}"
     os.makedirs(save_dir, exist_ok=True)
@@ -171,10 +185,9 @@ def generate_and_process_samples(config, device, scaling_path, weights_path):
     track_dir = os.path.join(save_dir, "denoising_process")
     os.makedirs(track_dir, exist_ok=True)
 
-    # --- NEW: Load max_val early and pass it into predict ---
+    # Load max_val early and pass it into predict
     max_val = np.load(scaling_path)
     signal = predict(config=config, device=device, track_dir=track_dir, max_val=max_val)
-    # --------------------------------------------------------
 
     generated_scaled = signal.cpu().numpy()
     generated_counts = unnormalize(generated_scaled, max_val)
@@ -187,7 +200,7 @@ def main(args):
     # Load and merge configuration blocks
     config = load_config(args.exp, args.model)
 
-    device = setup_device(config['hardware'])
+    device = setup_device(config['hardware'], mode="inference")
     weights_path = config['generation']['model_path']
     num_samples = config['generation']['num_samples_to_generate']
     scaling_path = config['paths']['scaling_factor_path']
