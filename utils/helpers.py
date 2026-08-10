@@ -171,6 +171,7 @@ def plot_and_save_spectra(generated_counts, save_dir, model_name):
 
 def plot_diffusion_step(track_path, single_signal, noise_scale_val, loop_idx, label, max_val=None):
     """
+    MAIN GOAL: The Photographer.
     A purely visual helper that saves a PNG graph of a single spectrum at a specific step in time.
     """
     sig_np = single_signal.cpu().numpy()
@@ -184,6 +185,16 @@ def plot_diffusion_step(track_path, single_signal, noise_scale_val, loop_idx, la
 
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(sig_np, color='blue', linewidth=1)
+
+    # Dynamic cropping ONLY for the final clean step
+    if label == "final_0":
+        non_zero_indices = np.nonzero(sig_np)[0]
+        if len(non_zero_indices) > 0:
+            max_x = non_zero_indices[-1]
+            ax.set_xlim(0, max_x + 50)
+        else:
+            ax.set_xlim(0, len(sig_np))
+
 
     if max_val is not None:
         ax.set_yscale('log')
