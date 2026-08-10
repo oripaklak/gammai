@@ -14,8 +14,11 @@ from utils.helpers import load_config, setup_device, plot_and_save_spectra, unno
 from models.diffwave import DiffWave
 
 
-def generate_samples(model, config, num_samples, device, track_dir=None, global_step=None, max_val=None):
-    """Core sampling logic for DiffWave with custom snapshot tracking."""
+def run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=None, global_step=None, max_val=None):
+    """
+    Takes pure Gaussian noise and iteratively removes it using the model's predictions,
+    following either the full training schedule (200 steps) or a fast inference schedule (e.g., 6 steps).
+    """
     gen_cfg = config['generation']
     mod_cfg = config['model']
 
@@ -48,7 +51,7 @@ def generate_samples(model, config, num_samples, device, track_dir=None, global_
                     step_found = True
                     break
 
-            # --- NEW: Fallback for floating-point rounding misses at the edges ---
+            # Fallback for floating-point rounding misses at the edges
             if not step_found:
                 if alpha_cum[s] >= talpha_cum[0]:
                     T_steps.append(0.0)
@@ -64,11 +67,7 @@ def generate_samples(model, config, num_samples, device, track_dir=None, global_
         noise_scale = torch.from_numpy(alpha_cum ** 0.5).float().to(device)
 
         if track_dir and num_tracking_steps > 0:
-            # 1. The last 10 steps of generation (indices 9 down to 0)
             last_10_steps = list(range(10))
-
-            # 2. 5 extra steps further out (you can change these numbers to whatever you want)
-            # For example: step 199 (start), 150, 100, 50, and 20
             extra_5_steps = [199, 150, 100, 50, 20]
             track_indices = set(last_10_steps + extra_5_steps)
 
@@ -82,40 +81,37 @@ def generate_samples(model, config, num_samples, device, track_dir=None, global_
             track_indices = set()
 
         # Reverse diffusion loop: gradually denoise from step T down to 0
-        # <-- Wrapped range() with tqdm here -->
         for n in tqdm(range(len(alpha) - 1, -1, -1), desc="Denoising Progress"):
             if n == len(alpha) - 1 and n in track_indices:
-                _save_snapshot(current_track_path, signal[0], noise_scale[n].item(), n, "initial_T", max_val)
+                _plot_diffusion_step(current_track_path, signal[0], noise_scale[n].item(), n, "initial_T", max_val)
 
-            # c1 and c2 are constants for the reverse step mean equation
             c1 = 1 / alpha[n] ** 0.5
             c2 = beta[n] / (1 - alpha_cum[n]) ** 0.5
 
-            # Predict the noise using the model, then subtract it to estimate the cleaner signal
+            # Predict noise and subtract it
             signal = c1 * (signal - c2 * model(signal, torch.tensor([T_steps[n]], device=signal.device)).squeeze(1))
 
             if n > 0:
-                # Inject a calculated amount of new variance (Langevin noise) back in
-                # This prevents the signal from collapsing to a deterministic average
                 noise = torch.randn_like(signal)
                 sigma = ((1.0 - alpha_cum[n - 1]) / (1.0 - alpha_cum[n]) * beta[n]) ** 0.5
                 signal += sigma * noise
 
             if n in track_indices and n != len(alpha) - 1:
                 label = "final_0" if n == 0 else f"mid_{n}"
-                _save_snapshot(current_track_path, signal[0], noise_scale[n].item(), n, label, max_val)
+                _plot_diffusion_step(current_track_path, signal[0], noise_scale[n].item(), n, label, max_val)
 
-        # Force final output x_0 to match the dataset's specific normalized range
+        # Force final output to normalized range
         signal = torch.clamp(signal, 0.0, 1.0)
 
     return signal
 
 
-def _save_snapshot(track_path, single_signal, noise_scale_val, loop_idx, label, max_val=None):
-    """Helper to generate visual plots of specific timesteps."""
+def _plot_diffusion_step(track_path, single_signal, noise_scale_val, loop_idx, label, max_val=None):
+    """
+    A purely visual helper that saves a PNG graph of a single spectrum at a specific step in time.
+    """
     sig_np = single_signal.cpu().numpy()
 
-    # Unnormalize and clean the signal if max_val is provided
     if max_val is not None:
         sig_np = unnormalize(sig_np, max_val)
         sig_np = np.clip(np.round(sig_np), a_min=0, a_max=None)
@@ -126,7 +122,6 @@ def _save_snapshot(track_path, single_signal, noise_scale_val, loop_idx, label, 
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(sig_np, color='blue', linewidth=1)
 
-    # Set to log scale if we unnormalized, to match your standard plots
     if max_val is not None:
         ax.set_yscale('log')
 
@@ -141,7 +136,11 @@ def _save_snapshot(track_path, single_signal, noise_scale_val, loop_idx, label, 
     plt.close(fig)
 
 
-def predict(config, device=torch.device('cuda'), track_dir=None, max_val=None):
+def load_model_and_generate(config, device=torch.device('cuda'), track_dir=None, max_val=None):
+    """
+    Initializes the PyTorch model architecture, loads the saved `.pt` weights from disk,
+    sets the model to evaluation mode, and hands it off to the generation engine.
+    """
     weights_path = config['generation']['model_path']
     num_samples = config['generation']['num_samples_to_generate']
 
@@ -153,10 +152,14 @@ def predict(config, device=torch.device('cuda'), track_dir=None, max_val=None):
     model.load_state_dict(checkpoint['model'])
     model.eval()
 
-    return generate_samples(model, config, num_samples, device, track_dir=track_dir, global_step="inference", max_val=max_val)
+    return run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=track_dir, global_step="inference", max_val=max_val)
 
 
-def generate_and_process_samples(config, device, scaling_path, weights_path):
+def execute_inference_pipeline(config, device, scaling_path, weights_path):
+    """
+    Handles all IO operations: setting up timestamped directories, checking config settings (like T=6),
+    loading the dataset scaling factor, and unnormalizing the final generated arrays into real-world values.
+    """
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     model_name = os.path.splitext(os.path.basename(weights_path))[0]
 
@@ -175,9 +178,8 @@ def generate_and_process_samples(config, device, scaling_path, weights_path):
     track_dir = os.path.join(save_dir, "denoising_process")
     os.makedirs(track_dir, exist_ok=True)
 
-    # Load max_val early and pass it into predict
     max_val = np.load(scaling_path)
-    signal = predict(config=config, device=device, track_dir=track_dir, max_val=max_val)
+    signal = load_model_and_generate(config=config, device=device, track_dir=track_dir, max_val=max_val)
 
     generated_scaled = signal.cpu().numpy()
     generated_counts = unnormalize(generated_scaled, max_val)
@@ -187,9 +189,11 @@ def generate_and_process_samples(config, device, scaling_path, weights_path):
 
 
 def main(args):
-    # Load and merge configuration blocks
+    """
+    Parses terminal arguments, loads the YAML configurations, checks GPU availability,
+    and triggers the main pipeline.
+    """
     config = load_config(args.exp, args.model)
-
     device = setup_device(config['hardware'], mode="inference")
     weights_path = config['generation']['model_path']
     num_samples = config['generation']['num_samples_to_generate']
@@ -197,7 +201,7 @@ def main(args):
 
     print(f"Generating {num_samples} samples from {weights_path}...")
 
-    generated_counts, save_dir, model_name = generate_and_process_samples(
+    generated_counts, save_dir, model_name = execute_inference_pipeline(
         config, device, scaling_path, weights_path
     )
 

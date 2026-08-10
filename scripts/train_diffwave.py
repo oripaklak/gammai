@@ -22,7 +22,7 @@ from utils.dataset import from_path
 from utils.helpers import load_config, set_seed, count_parameters, format_param_count, register_graceful_shutdown, get_noise_schedule
 from utils.metrics import calculate_frechet_distance, calculate_polynomial_mmd
 from models.diffwave import DiffWave
-from inference_diffwave import generate_samples
+from inference_diffwave import run_reverse_diffusion_loop
 
 # ==============================================================================
 # Core Training Logic
@@ -209,7 +209,7 @@ class DiffWaveLearner:
                 # Track signals only on the first batch
                 current_track_dir = self.track_dir_eval if generated_so_far == 0 else None
 
-                fake_signal = generate_samples(
+                fake_signal = run_reverse_diffusion_loop(
                     model=model_to_eval,
                     config=self.config,
                     num_samples=current_batch_size,
