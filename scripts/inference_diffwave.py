@@ -10,12 +10,12 @@ from tqdm import tqdm
 # Add the project root to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from utils.helpers import load_config, setup_device, plot_and_save_spectra, unnormalize
+from utils.helpers import load_config, setup_device, plot_and_save_spectra, unnormalize, get_noise_schedule
 from models.diffwave import DiffWave
 
 
 def generate_samples(model, config, num_samples, device, track_dir=None, global_step=None, max_val=None):
-    """Core sampling logic for DiffWave with linear step tracking."""
+    """Core sampling logic for DiffWave with custom snapshot tracking."""
     gen_cfg = config['generation']
     mod_cfg = config['model']
 
@@ -24,22 +24,16 @@ def generate_samples(model, config, num_samples, device, track_dir=None, global_
     num_tracking_steps = gen_cfg.get('num_tracking_steps', 0)
 
     with torch.no_grad():
+        training_noise_schedule, talpha_cum = get_noise_schedule(mod_cfg)
         T = mod_cfg['T']
-        beta_init = mod_cfg['beta_init']
-        beta_final = mod_cfg['beta_final']
 
-        # Define noise variance schedules (beta)
-        training_noise_schedule = np.linspace(beta_init, beta_final, T, dtype=np.float32)
+        # Determine if we are fast sampling or doing full diffusion
         inference_noise_schedule = np.array(
             mod_cfg['inference_noise_schedule']) if fast_sampling else training_noise_schedule
 
-        # alpha = 1 - beta. alpha_cum is alpha_bar (cumulative product)
-        # These track the exact ratio of clean signal to noise at any given step
-        talpha = 1 - training_noise_schedule
-        talpha_cum = np.cumprod(talpha)
-
+        # Get cumulative noise for the inference schedule specifically
         beta = inference_noise_schedule
-        alpha = 1 - beta
+        alpha = 1.0 - beta
         alpha_cum = np.cumprod(alpha)
 
         # Map inference steps to fractional training steps (interpolation for fast sampling)
@@ -121,14 +115,13 @@ def _save_snapshot(track_path, single_signal, noise_scale_val, loop_idx, label, 
     """Helper to generate visual plots of specific timesteps."""
     sig_np = single_signal.cpu().numpy()
 
-    # --- NEW: Unnormalize and clean the signal if max_val is provided ---
+    # Unnormalize and clean the signal if max_val is provided
     if max_val is not None:
         sig_np = unnormalize(sig_np, max_val)
         sig_np = np.clip(np.round(sig_np), a_min=0, a_max=None)
         y_label = "Counts (Log Scale)"
     else:
         y_label = "Amplitude (Normalized)"
-    # --------------------------------------------------------------------
 
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(sig_np, color='blue', linewidth=1)
@@ -160,7 +153,6 @@ def predict(config, device=torch.device('cuda'), track_dir=None, max_val=None):
     model.load_state_dict(checkpoint['model'])
     model.eval()
 
-    # --- NEW: Pass max_val into generate_samples ---
     return generate_samples(model, config, num_samples, device, track_dir=track_dir, global_step="inference", max_val=max_val)
 
 
@@ -168,7 +160,6 @@ def generate_and_process_samples(config, device, scaling_path, weights_path):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     model_name = os.path.splitext(os.path.basename(weights_path))[0]
 
-    # --- NEW: Check fast sampling and update model_name ---
     gen_cfg = config['generation']
     fast_sampling = gen_cfg.get('fast_sampling', True)
 
@@ -176,7 +167,6 @@ def generate_and_process_samples(config, device, scaling_path, weights_path):
         inference_schedule = config['model'].get('inference_noise_schedule', [])
         num_fast_steps = len(inference_schedule)
         model_name = f"{model_name}_T={num_fast_steps}"
-    # ------------------------------------------------------
 
     run_name = os.path.basename(os.path.dirname(weights_path))
     save_dir = f"results/{run_name}/{model_name}_{timestamp}"

@@ -19,7 +19,7 @@ from tqdm import tqdm
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils.dataset import from_path
-from utils.helpers import load_config, set_seed, count_parameters, format_param_count, register_graceful_shutdown
+from utils.helpers import load_config, set_seed, count_parameters, format_param_count, register_graceful_shutdown, get_noise_schedule
 from utils.metrics import calculate_frechet_distance, calculate_polynomial_mmd
 from models.diffwave import DiffWave
 from inference_diffwave import generate_samples
@@ -67,15 +67,9 @@ class DiffWaveLearner:
             os.makedirs(self.track_dir_eval, exist_ok=True)
             os.makedirs(self.track_dir_train, exist_ok=True)
 
-        # --- Dynamically Generate Noise Schedule ---
-        T = self.model_cfg['T']
-        beta_init = self.model_cfg['beta_init']
-        beta_final = self.model_cfg['beta_final']
+        # Unpack both beta and noise_level (alpha_bar) directly
+        beta, noise_level = get_noise_schedule(self.model_cfg)
 
-        beta = np.linspace(beta_init, beta_final, T, dtype=np.float32)
-
-        # Calculate cumulative noise levels for training
-        noise_level = np.cumprod(1 - beta) # alpha bar
         self.noise_level = torch.tensor(noise_level.astype(np.float32))
         self.loss_fn = nn.L1Loss()
 
