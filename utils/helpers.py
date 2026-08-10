@@ -112,6 +112,27 @@ def get_noise_schedule(model_cfg):
 
     return beta, alpha_bar
 
+def normalize(signal, max_val):
+    """
+    Normalizes the raw signal by applying log1p and dividing by the global maximum.
+    Works with both NumPy arrays and PyTorch tensors.
+    """
+    if isinstance(signal, torch.Tensor):
+        return torch.log1p(signal) / max_val
+    else:
+        return np.log1p(signal) / max_val
+
+
+def unnormalize(signal, max_val):
+    """
+    Reverses the normalization to return the signal to its raw integer counts.
+    Multiplies by max_val and applies expm1.
+    """
+    if isinstance(signal, torch.Tensor):
+        return torch.expm1(signal * max_val)
+    else:
+        return np.expm1(signal * max_val)
+
 def plot_and_save_spectra(generated_counts, save_dir, model_name):
     """Plots and saves a batch of generated spectra to the specified directory."""
     num_samples = generated_counts.shape[0]
@@ -148,23 +169,31 @@ def plot_and_save_spectra(generated_counts, save_dir, model_name):
 
         plt.close()
 
-def normalize(signal, max_val):
+def plot_diffusion_step(track_path, single_signal, noise_scale_val, loop_idx, label, max_val=None):
     """
-    Normalizes the raw signal by applying log1p and dividing by the global maximum.
-    Works with both NumPy arrays and PyTorch tensors.
+    A purely visual helper that saves a PNG graph of a single spectrum at a specific step in time.
     """
-    if isinstance(signal, torch.Tensor):
-        return torch.log1p(signal) / max_val
-    else:
-        return np.log1p(signal) / max_val
+    sig_np = single_signal.cpu().numpy()
 
-
-def unnormalize(signal, max_val):
-    """
-    Reverses the normalization to return the signal to its raw integer counts.
-    Multiplies by max_val and applies expm1.
-    """
-    if isinstance(signal, torch.Tensor):
-        return torch.expm1(signal * max_val)
+    if max_val is not None:
+        sig_np = unnormalize(sig_np, max_val)
+        sig_np = np.clip(np.round(sig_np), a_min=0, a_max=None)
+        y_label = "Counts (Log Scale)"
     else:
-        return np.expm1(signal * max_val)
+        y_label = "Amplitude (Normalized)"
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(sig_np, color='blue', linewidth=1)
+
+    if max_val is not None:
+        ax.set_yscale('log')
+
+    ax.set_title(
+        f"Diffusion Generation Progress [{label.upper()}] | Loop Index: {loop_idx}\nNoise Scale: {noise_scale_val:.6f}")
+    ax.set_xlabel("Channel")
+    ax.set_ylabel(y_label)
+    ax.grid(True, which="both", ls="--", alpha=0.5)
+    plt.tight_layout()
+
+    plt.savefig(os.path.join(track_path, f"{label}_plot.png"), dpi=300)
+    plt.close(fig)

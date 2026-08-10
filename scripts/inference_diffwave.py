@@ -10,7 +10,7 @@ from tqdm import tqdm
 # Add the project root to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from utils.helpers import load_config, setup_device, plot_and_save_spectra, unnormalize, get_noise_schedule
+from utils.helpers import load_config, setup_device, plot_and_save_spectra, unnormalize, get_noise_schedule, plot_diffusion_step
 from models.diffwave import DiffWave
 
 
@@ -83,7 +83,7 @@ def run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=Non
         # Reverse diffusion loop: gradually denoise from step T down to 0
         for n in tqdm(range(len(alpha) - 1, -1, -1), desc="Denoising Progress"):
             if n == len(alpha) - 1 and n in track_indices:
-                _plot_diffusion_step(current_track_path, signal[0], noise_scale[n].item(), n, "initial_T", max_val)
+                plot_diffusion_step(current_track_path, signal[0], noise_scale[n].item(), n, "initial_T", max_val)
 
             c1 = 1 / alpha[n] ** 0.5
             c2 = beta[n] / (1 - alpha_cum[n]) ** 0.5
@@ -98,42 +98,12 @@ def run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=Non
 
             if n in track_indices and n != len(alpha) - 1:
                 label = "final_0" if n == 0 else f"mid_{n}"
-                _plot_diffusion_step(current_track_path, signal[0], noise_scale[n].item(), n, label, max_val)
+                plot_diffusion_step(current_track_path, signal[0], noise_scale[n].item(), n, label, max_val)
 
         # Force final output to normalized range
         signal = torch.clamp(signal, 0.0, 1.0)
 
     return signal
-
-
-def _plot_diffusion_step(track_path, single_signal, noise_scale_val, loop_idx, label, max_val=None):
-    """
-    A purely visual helper that saves a PNG graph of a single spectrum at a specific step in time.
-    """
-    sig_np = single_signal.cpu().numpy()
-
-    if max_val is not None:
-        sig_np = unnormalize(sig_np, max_val)
-        sig_np = np.clip(np.round(sig_np), a_min=0, a_max=None)
-        y_label = "Counts (Log Scale)"
-    else:
-        y_label = "Amplitude (Normalized)"
-
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(sig_np, color='blue', linewidth=1)
-
-    if max_val is not None:
-        ax.set_yscale('log')
-
-    ax.set_title(
-        f"Diffusion Generation Progress [{label.upper()}] | Loop Index: {loop_idx}\nNoise Scale: {noise_scale_val:.6f}")
-    ax.set_xlabel("Channel")
-    ax.set_ylabel(y_label)
-    ax.grid(True, which="both", ls="--", alpha=0.5)
-    plt.tight_layout()
-
-    plt.savefig(os.path.join(track_path, f"{label}_plot.png"), dpi=300)
-    plt.close(fig)
 
 
 def load_model_and_generate(config, device=torch.device('cuda'), track_dir=None, max_val=None):
