@@ -101,7 +101,7 @@ def get_noise_schedule(model_cfg):
         t = np.arange(T + 1)
 
         f_t = np.cos(((t / T + s) / (1.0 + s)) * (np.pi / 2.0)) ** 2
-        alpha_bar_t = f_t / f_t[0]
+        alpha_bar_t = f_t / f_t[0] # how much of the original image remains preserved at time step $t$
         beta = 1.0 - (alpha_bar_t[1:] / alpha_bar_t[:-1])
         beta = np.clip(beta, a_min=0.0, a_max=0.999).astype(np.float32)
 
@@ -111,6 +111,45 @@ def get_noise_schedule(model_cfg):
     alpha_bar = np.cumprod(1.0 - beta).astype(np.float32)
 
     return beta, alpha_bar
+
+
+def plot_noise_schedule(beta, alpha_bar, run_dir):
+    """
+    Generates and saves visual plots for the diffusion noise schedules.
+    Saves a plot for the Beta schedule and the Alpha Bar (Cumulative) schedule.
+    """
+    # Create the specific output directory
+    save_dir = os.path.join(run_dir, "tracked_noise")
+    os.makedirs(save_dir, exist_ok=True)
+
+    T = len(beta)
+    steps = np.arange(T)
+
+    # --- Plot 1: Beta Schedule (Noise Variance added per step) ---
+    plt.figure(figsize=(10, 5))
+    plt.plot(steps, beta, label="Beta (Variance added)", color='red', linewidth=2)
+    plt.title(f"Beta Noise Schedule (T={T})")
+    plt.xlabel("Diffusion Step (t)")
+    plt.ylabel("Beta Value")
+    plt.grid(True, which="both", ls="--", alpha=0.5)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "beta_schedule.png"), dpi=300)
+    plt.close()
+
+    # --- Plot 2: Alpha Bar (Cumulative Signal Remaining) ---
+    plt.figure(figsize=(10, 5))
+    plt.plot(steps, alpha_bar, label="Alpha Bar (Signal Preserved)", color='blue', linewidth=2)
+    plt.title(f"Cumulative Signal Preservation (T={T})")
+    plt.xlabel("Diffusion Step (t)")
+    plt.ylabel("Alpha Bar Value")
+    plt.grid(True, which="both", ls="--", alpha=0.5)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "alpha_cum_schedule.png"), dpi=300)
+    plt.close()
+
+    print(f"Noise schedule plots saved to: {save_dir}/")
 
 def normalize(signal, max_val):
     """
@@ -208,3 +247,59 @@ def plot_diffusion_step(track_path, single_signal, noise_scale_val, loop_idx, la
 
     plt.savefig(os.path.join(track_path, f"{label}_plot.png"), dpi=300)
     plt.close(fig)
+
+
+if __name__ == '__main__':
+    print("Running standalone noise schedule comparison...")
+
+    # Mock configuration based on your diffwave.yaml parameters
+    base_model_cfg = {
+        'T': 200,
+        'beta_init': 0.0001,
+        'beta_final': 0.02
+    }
+
+    # --- 1. Generate Both Schedules ---
+    linear_cfg = base_model_cfg.copy()
+    linear_cfg['schedule_type'] = 'linear'
+    beta_lin, alpha_lin = get_noise_schedule(linear_cfg)
+
+    cosine_cfg = base_model_cfg.copy()
+    cosine_cfg['schedule_type'] = 'cosine'
+    cosine_cfg['cosine_s'] = 0.008
+    beta_cos, alpha_cos = get_noise_schedule(cosine_cfg)
+
+    # --- 2. Setup Directory ---
+    save_dir = "noise_schedules_test/comparison"
+    os.makedirs(save_dir, exist_ok=True)
+
+    T = len(beta_lin)
+    steps = np.arange(T)
+
+    # --- 3. Plot Beta Comparison ---
+    plt.figure(figsize=(10, 5))
+    plt.plot(steps, beta_lin, label="Linear Beta", color='red', linestyle='--', linewidth=2)
+    plt.plot(steps, beta_cos, label="Cosine Beta", color='blue', linewidth=2)
+    plt.title(f"Beta Noise Schedule Comparison (T={T})")
+    plt.xlabel("Diffusion Step (t)")
+    plt.ylabel("Beta Value")
+    plt.grid(True, which="both", ls="--", alpha=0.5)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "beta_comparison.png"), dpi=300)
+    plt.close()
+
+    # --- 4. Plot Alpha Cum Comparison ---
+    plt.figure(figsize=(10, 5))
+    plt.plot(steps, alpha_lin, label="Linear Alpha Bar", color='red', linestyle='--', linewidth=2)
+    plt.plot(steps, alpha_cos, label="Cosine Alpha Bar", color='blue', linewidth=2)
+    plt.title(f"Cumulative Signal Preservation Comparison (T={T})")
+    plt.xlabel("Diffusion Step (t)")
+    plt.ylabel("Alpha Bar Value")
+    plt.grid(True, which="both", ls="--", alpha=0.5)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "alpha_cum_comparison.png"), dpi=300)
+    plt.close()
+
+    print(f"\nSuccess! Comparison plots saved to: {save_dir}/")
