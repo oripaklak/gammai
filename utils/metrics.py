@@ -70,6 +70,85 @@ def calculate_polynomial_mmd(real_data, fake_data, degree=3, coef0=1):
     return float(kid_equivalent)
 
 
+def calculate_ndb(real_data, fake_data, n_clusters=50, alpha=0.05, random_state=42):
+    """
+    Computes the Number of Statistically-Different Bins (NDB) metric for 1D spectra.
+
+    Parameters:
+    -----------
+    real_data : np.ndarray, shape (N_real, L)
+        Real spectra vectors.
+    fake_data : np.ndarray, shape (N_fake, L)
+        Generated spectra vectors.
+    n_clusters : int, optional
+        Number of clusters (bins) $K$ to partition the data space. Default is 50.
+    alpha : float, optional
+        Significance level for the binomial hypothesis test. Default is 0.05.
+    random_state : int, optional
+        Random seed for reproducibility of KMeans.
+
+    Returns:
+    --------
+    dict
+        Contains the NDB score and diagnostic details per bin.
+    """
+    X = np.atleast_2d(real_data)
+    Y = np.atleast_2d(fake_data)
+
+    m = X.shape[0]  # Number of real samples
+    n = Y.shape[0]  # Number of fake samples
+
+    # Step 1: Fit KMeans clustering exclusively on the REAL data space
+    kmeans = KMeans(n_clusters=n_clusters, random_state=random_state, n_init='auto')
+    kmeans.fit(X)
+
+    # Step 2: Assign both real and fake samples to the nearest cluster bins
+    real_labels = kmeans.predict(X)
+    fake_labels = kmeans.predict(Y)
+
+    # Count occurrences in each bin
+    real_counts = np.bincount(real_labels, minlength=n_clusters)
+    fake_counts = np.bincount(fake_labels, minlength=n_clusters)
+
+    # Expected proportion of samples falling into each bin from the real dataset
+    p_real = real_counts / m
+
+    # Step 3: Perform binomial tests for each bin
+    # Null hypothesis: The probability of a generated sample falling into bin i is p_real[i].
+    ndb_score = 0
+    bin_results = []
+
+    for i in range(n_clusters):
+        k_success = fake_counts[i]  # Number of fake samples in bin i
+        p_prob = p_real[i]  # Expected probability from real distribution
+
+        # If a bin has zero real samples, handle edge cases
+        if p_prob == 0:
+            p_val = 0.0 if k_success == 0 else 1.0
+        else:
+            # Two-sided binomial test
+            res = binomtest(k_success, n=n, p=p_prob)
+            p_val = res.pvalue
+
+        # Check if difference is statistically significant
+        is_different = (p_val < alpha)
+        if is_different:
+            ndb_score += 1
+
+        bin_results.append({
+            'bin': i,
+            'real_count': real_counts[i],
+            'fake_count': fake_counts[i],
+            'p_value': p_val,
+            'significant_diff': is_different
+        })
+
+    return {
+        'ndb_score': ndb_score,
+        'max_bins': n_clusters,
+        'bin_details': bin_results
+    }
+
 if __name__ == "__main__":
     # 1. Load the data
     data_path = "data/spectrum_matrix_2023_2024.npy"
