@@ -69,6 +69,7 @@ class DiffWaveLearner:
 
         # Unpack both beta and noise_level (alpha_bar) directly
         beta, noise_level = get_noise_schedule(self.model_cfg)
+        plot_noise_schedule(beta, alpha_bar, model_dir)
 
         self.noise_level = torch.tensor(noise_level.astype(np.float32))
         self.loss_fn = nn.L1Loss()
