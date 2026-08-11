@@ -22,7 +22,7 @@ training:
   use_pretrained_weights: false # Use for fine-tuning. Loads ONLY the neural network weights
 
 generation:
-  model_path: "checkpoints/diff_7M_L36_C128_bs16_lr0.0002_ep1000/weights-22000.pt"
+  model_path: "checkpoints/diff_7M_L36_C128_bs16_lr0.0002_linear_ep1000/weights-116000.pt"
   num_samples_to_generate: 200
   fast_sampling: false
   num_tracking_steps: 10 # Set to 0 to disable tracking completely
@@ -36,5 +36,5 @@ tracking:
 paths:
   data_path: "data/spectrum_matrix_2023_2024.npy"
   scaling_factor_path: "data/scaling_factor_2023_2024.npy"
-  pretrained_weights_path: "checkpoints/diff_200M_L36_C800_bs16_lr0.0002_ep400/weights-10000.pt"
+  pretrained_weights_path: "checkpoints/diff_200M_L36_C800_bs16_lr0.0002_linear_ep400/weights-10000.pt"
   checkpoints_dir: "checkpoints"

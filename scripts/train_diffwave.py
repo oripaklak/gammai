@@ -541,8 +541,9 @@ def main():
     # Auto-generate a unique checkpoint directory based on training AND model params
     layers = config['model']['residual_layers']
     channels = config['model']['residual_channels']
+    schedule_type = config['model']['schedule_type']
     param_str = format_param_count(total_params)
-    run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{train_cfg['batch_size']}_lr{train_cfg['learning_rate']}_ep{train_cfg['epochs']}"
+    run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{train_cfg['batch_size']}_lr{train_cfg['learning_rate']}_{schedule_type}_ep{train_cfg['epochs']}"
     run_dir = os.path.join(path_cfg['checkpoints_dir'], run_name)
 
     # Determine replica count based on YAML override or available GPUs
