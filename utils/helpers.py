@@ -98,16 +98,26 @@ def get_noise_schedule(model_cfg):
 
     elif schedule_type == 'cosine':
         s = model_cfg.get('cosine_s', 0.008)
+        # --- NEW: Fetch the target end directly from the config (default to 0.0) ---
+        target_end = model_cfg.get('cosine_target_end', 0.0)
+
         t = np.arange(T + 1)
 
+        # 1. Calculate the pure cosine curve (goes from 1 to 0)
         f_t = np.cos(((t / T + s) / (1.0 + s)) * (np.pi / 2.0)) ** 2
-        alpha_bar_t = f_t / f_t[0] # how much of the original image remains preserved at time step $t$
+        pure_cosine_alpha_bar = f_t / f_t[0]
+
+        # 2. Scale the cosine curve so it ends at target_end instead of 0
+        alpha_bar_t = target_end + (1.0 - target_end) * pure_cosine_alpha_bar
+
+        # 3. Reverse-engineer the betas from the scaled alpha_bar
         beta = 1.0 - (alpha_bar_t[1:] / alpha_bar_t[:-1])
         beta = np.clip(beta, a_min=0.0, a_max=0.999).astype(np.float32)
 
     else:
         raise ValueError(f"Unsupported schedule_type: {schedule_type}")
 
+    # Calculate final cumulative noise (alpha_bar) to return
     alpha_bar = np.cumprod(1.0 - beta).astype(np.float32)
 
     return beta, alpha_bar
@@ -267,6 +277,7 @@ if __name__ == '__main__':
     cosine_cfg = base_model_cfg.copy()
     cosine_cfg['schedule_type'] = 'cosine'
     cosine_cfg['cosine_s'] = 0.008
+    cosine_cfg['cosine_target_end'] = 0.13
     beta_cos, alpha_cos = get_noise_schedule(cosine_cfg)
 
     # --- 2. Setup Directory ---
