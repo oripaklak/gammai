@@ -29,17 +29,24 @@ Ensure your project follows this hierarchy before running the code:
 project_root/
 +-- analyze_files/           <-- Scripts for parsing, converting, and visualizing raw experimental data (.cnf, .spe, .npy)
 +-- checkpoints/             <-- Automatically generated model weights and training artifacts
-|   +-- diff_param200M_L36_C800_bs16_lr0.0002_ep400/  <-- Example of a specific training run directory
+|   +-- diff_7M_L36_C128_bs16_lr0.0002_cosine_ep1050/ <-- Example of a specific training run directory
+|       +-- tracked_noise/   <-- Plots of diffusion noise schedules (alpha_cum_schedule.png, beta_schedule.png)
 |       +-- tracked_signals/ <-- Visual comparisons of signals saved during training and evaluation
 |       |   +-- eval/        <-- Generated plots from the fast-sampling evaluation loop
 |       |   +-- train/       <-- Forward diffusion process plots (e.g., clean x_0 vs noisy x_100)
 |       +-- wandb_id.txt     <-- Cached WandB run ID to seamlessly stitch resumed runs
-|       +-- weights-400.pt   <-- Step-specific checkpoint (contains weights, optimizer, and RNG states)
+|       +-- weights-2000.pt  <-- Step-specific checkpoint (contains weights, optimizer, and RNG states)
 |       +-- weights.pt       <-- Symlink pointing to the most recent step checkpoint
 +-- configs/                 <-- Centralized YAML configuration files (split into /experiments and /models)
 +-- data/                    <-- Raw data folders (CTBT, IAEA, MCNP) and unified .npy matrix/scaling files
 +-- models/                  <-- PyTorch model architectures (vae.py, diffwave.py)
 +-- results/                 <-- Generated spectra arrays and plots organized by specific inference runs
+|   +-- diff_7M_L36_C128_bs16_lr0.0002_cosine_ep1000/
+|       +-- weights-106000_2026-08-12_08-34-28/   <-- Timestamped inference folder for a specific checkpoint
+|           +-- denoising_process/     <-- Step-by-step visualizations of the reverse diffusion inference
+|           +-- retrieval_comparisons/ <-- Visual and text logs comparing generated samples to nearest real data
+|           +-- all_200_samples.npy    <-- The raw generated matrix of synthetic spectra
+|           +-- spectrum_001.png       <-- Individual plots of the generated samples
 +-- scripts/                 <-- Core execution scripts for training, inference, and latent space visualization
 +-- utils/                   <-- Shared helper functions (helpers.py), metrics.py, and dataloaders (dataset.py)
 +-- wandb/                   <-- Weights & Biases local sync directories, debug logs, and crash reports
