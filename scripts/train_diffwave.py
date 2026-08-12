@@ -20,7 +20,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils.dataset import from_path
 from utils.helpers import load_config, set_seed, count_parameters, format_param_count, register_graceful_shutdown, get_noise_schedule
-from utils.metrics import calculate_frechet_distance, calculate_polynomial_mmd
+from utils.metrics import calculate_fid, calculate_kid
 from models.diffwave import DiffWave
 from inference_diffwave import run_reverse_diffusion_loop
 
@@ -227,8 +227,8 @@ class DiffWaveLearner:
 
         # --- 3. Calculate Metrics ---
         try:
-            fd_score = calculate_frechet_distance(real_np, fake_np)
-            kid_score = calculate_polynomial_mmd(real_np, fake_np)
+            fd_score = calculate_fid(real_np, fake_np)
+            kid_score = calculate_kid(real_np, fake_np)
 
             if self.track_cfg['enabled']:
                 import wandb

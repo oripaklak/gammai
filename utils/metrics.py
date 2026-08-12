@@ -2,7 +2,7 @@ import numpy as np
 from scipy import linalg
 from sklearn.decomposition import PCA
 
-def calculate_frechet_distance(real_data, fake_data, eps=1e-6, n_components=128):
+def calculate_fid(real_data, fake_data, eps=1e-6, n_components=128):
     """
     Computes the Fréchet Distance between two 1D distributions.
     This is the mathematical equivalent of FID, but calculated directly
@@ -43,7 +43,7 @@ def calculate_frechet_distance(real_data, fake_data, eps=1e-6, n_components=128)
     return float(fd)
 
 
-def calculate_polynomial_mmd(real_data, fake_data, degree=3, coef0=1):
+def calculate_kid(real_data, fake_data, degree=3, coef0=1):
     """
     Computes the Unbiased Maximum Mean Discrepancy using a polynomial kernel.
     This is the mathematical foundation of KID, calculated directly on the spectra.
