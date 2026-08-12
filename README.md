@@ -125,3 +125,12 @@ python scripts/plot_latent_space.py \
 python scripts/inference_diffwave.py --exp configs/experiments/diffwave_base.yaml --model configs/models/diffwave.yaml
 ```
 
+## Data Retrieval & Memorization Check
+
+After generating synthetic spectra, it is crucial to evaluate whether the model is generating novel data or simply memorizing the training set (overfitting). The retrieval script calculates the Euclidean distance between the generated spectra and all original training samples directly from the `.txt` directories, finding the nearest real neighbor for each generated sample.
+
+**To run the retrieval analysis:**
+Run the following command, replacing the `--results_dir` path with your specific inference output directory (where the `all_N_samples.npy` file is located):
+
+```bash
+python scripts/find_closest_spectra.py --results_dir results/YOUR_RUN_NAME/YOUR_TIMESTAMP_FOLDER
