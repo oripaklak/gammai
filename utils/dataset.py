@@ -45,13 +45,25 @@ class Collator:
 
 def from_path(data_dirs, config, is_distributed=False):
     dataset = SignalDataset(data_dirs, config)
+
+    # Extract the global seed from your config (assuming it is stored there)
+    global_seed = config['training'].get('seed', 42)
+
+    # Pass the seed to the sampler to ensure it syncs with your global randomness
+    sampler = DistributedSampler(dataset, seed=global_seed) if is_distributed else None
+
+    # Optional: explicitly seed the DataLoader's internal generator for the non-distributed shuffle
+    g = torch.Generator()
+    g.manual_seed(global_seed)
+
     return torch.utils.data.DataLoader(
         dataset,
         batch_size=config['training']['batch_size'],
         collate_fn=Collator(config).collate,
-        shuffle=not is_distributed,
-        num_workers=0,  # Changed to 0 since the matrix is fully loaded in memory
-        sampler=DistributedSampler(dataset) if is_distributed else None,
+        shuffle=(not is_distributed),
+        num_workers=0,  # Matrix is fully loaded in memory
+        sampler=sampler,
         pin_memory=True,
-        drop_last=True
+        drop_last=True,
+        generator=g if not is_distributed else None  # Locks the standard shuffle
     )
