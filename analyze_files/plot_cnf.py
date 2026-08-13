@@ -12,8 +12,8 @@ from read_cnf import read_cnf_file
 # ==========================================
 # SETUP AND DATA LOADING
 # ==========================================
-dataset_dir = "data/CTBT_HPGe/cnf"
-output_dir = "data/CTBT_HPGe/plots"
+dataset_dir = "data/ALMERA_HPGe/cnf"
+output_dir = "data/ALMERA_HPGe/plots"
 
 os.makedirs(output_dir, exist_ok=True)
 
