@@ -1,6 +1,8 @@
 import numpy as np
 from scipy import linalg
 from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
+from scipy.stats import binomtest
 
 def calculate_fid(real_data, fake_data, eps=1e-6, n_components=128):
     """
@@ -174,7 +176,7 @@ if __name__ == "__main__":
         exit()
 
     # 2. Shuffle the data
-    np.random.seed(42)
+    np.random.seed(0)
     indices = np.random.permutation(N)
     shuffled_data = data[indices]
 
@@ -194,8 +196,16 @@ if __name__ == "__main__":
     # 4. Calculate Baselines
     print("\n--- Calculating Baselines (Real vs Real) ---")
 
-    baseline_fd = calculate_frechet_distance(half_a, half_b, n_components=safe_components)
+    # Fixed function names to match your definitions
+    baseline_fd = calculate_fid(half_a, half_b, n_components=safe_components)
     print(f"Baseline Fréchet Distance (FD): {baseline_fd:.6f}")
 
-    baseline_kid = calculate_polynomial_mmd(half_a, half_b)
+    baseline_kid = calculate_kid(half_a, half_b)
     print(f"Baseline Polynomial MMD (KID):  {baseline_kid:.6f}")
+
+    # --- NEW: Calculate Baseline NDB ---
+    # Using the default 50 clusters/bins defined in your function
+    baseline_ndb_data = calculate_ndb(half_a, half_b, n_clusters=30)
+    ndb_score = baseline_ndb_data['ndb_score']
+    max_bins = baseline_ndb_data['max_bins']
+    print(f"Baseline NDB Score:             {ndb_score} / {max_bins} bins")

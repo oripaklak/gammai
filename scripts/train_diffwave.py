@@ -19,7 +19,8 @@ from tqdm import tqdm
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils.dataset import from_path
-from utils.helpers import load_config, set_seed, count_parameters, format_param_count, register_graceful_shutdown, get_noise_schedule
+from utils.helpers import (load_config, set_seed, count_parameters, format_param_count, register_graceful_shutdown,
+                           get_noise_schedule, plot_noise_schedule)
 from utils.metrics import calculate_fid, calculate_kid
 from models.diffwave import DiffWave
 from inference_diffwave import run_reverse_diffusion_loop
@@ -68,10 +69,10 @@ class DiffWaveLearner:
             os.makedirs(self.track_dir_train, exist_ok=True)
 
         # Unpack both beta and noise_level (alpha_bar) directly
-        beta, noise_level = get_noise_schedule(self.model_cfg)
+        beta, alpha_bar = get_noise_schedule(self.model_cfg)
         plot_noise_schedule(beta, alpha_bar, model_dir)
 
-        self.noise_level = torch.tensor(noise_level.astype(np.float32))
+        self.noise_level = torch.tensor(alpha_bar.astype(np.float32))
         self.loss_fn = nn.L1Loss()
 
         # Load scaling factor for un-normalizing x_0 tracks
