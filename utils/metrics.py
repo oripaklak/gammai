@@ -151,6 +151,46 @@ def calculate_ndb(real_data, fake_data, n_clusters=50, alpha=0.05, random_state=
         'bin_details': bin_results
     }
 
+
+def calculate_f_mem(gen_data, real_data, k=1 / 3):
+    """
+    Calculates the number (and fraction) of memorized generated samples.
+
+    Args:
+        gen_data (np.ndarray): 2D array of generated spectra (N_gen, length).
+        real_data (np.ndarray): 2D array of real training spectra (N_real, length).
+        k (float): The threshold for the distance ratio (e.g., 1/3, 1/2).
+
+    Returns:
+        int: Number of memorized samples (f_mem).
+        float: Fraction of memorized samples.
+    """
+    # 1. Fit a Nearest Neighbors tree on the real dataset
+    # We set n_neighbors=2 to get both a^mu1 and a^mu2
+    nn = NearestNeighbors(n_neighbors=2, metric='euclidean')
+    nn.fit(real_data)
+
+    # 2. Find the 2 closest real samples for every generated sample
+    # distances will be a matrix of shape (N_gen, 2)
+    distances, _ = nn.kneighbors(gen_data)
+
+    d1 = distances[:, 0]  # ||x - a^mu1||
+    d2 = distances[:, 1]  # ||x - a^mu2||
+
+    # 3. Calculate the ratio safely
+    # If d2 is exactly 0 (which happens if there are duplicate real samples),
+    # we prevent a divide-by-zero error.
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratios = np.where(d2 == 0, 0.0, d1 / d2)
+
+    # 4. Count how many samples fall below the threshold k
+    is_memorized = ratios < k
+
+    f_mem_count = int(np.sum(is_memorized))
+    f_mem_percentage = float(np.mean(is_memorized)) * 100
+
+    return f_mem_percentage
+
 if __name__ == "__main__":
     # 1. Load the data
     data_path = "data/spectrum_matrix_2023_2024.npy"

@@ -21,7 +21,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils.dataset import from_path
 from utils.helpers import (load_config, set_seed, count_parameters, format_param_count, register_graceful_shutdown,
                            get_noise_schedule, plot_noise_schedule)
-from utils.metrics import calculate_fid, calculate_kid
+from utils.metrics import calculate_fid, calculate_kid, calculate_f_mem
 from models.diffwave import DiffWave
 from inference_diffwave import run_reverse_diffusion_loop
 
@@ -230,15 +230,16 @@ class DiffWaveLearner:
         try:
             fd_score = calculate_fid(real_np, fake_np)
             kid_score = calculate_kid(real_np, fake_np)
-
+            f_mem_percentage = calculate_f_mem(fake_np, real_np, k=1/3)
             if self.track_cfg['enabled']:
                 import wandb
                 wandb.log({
                     "eval/FID": fd_score,
-                    "eval/KID": kid_score
+                    "eval/KID": kid_score,
+                    "eval/f_mem": f_mem_percentage
                 }, step=self.step)
 
-            print(f"--> Eval Step {self.step} | FD: {fd_score:.4f} | KD: {kid_score:.4f}")
+            print(f"--> Eval Step {self.step} | FD: {fd_score:.4f} | KD: {kid_score:.4f} | F_Mem: {f_mem_percentage:.1f}")
         except Exception as e:
             print(f"\nWarning: Failed to calculate evaluation metrics. Error: {e}")
 
