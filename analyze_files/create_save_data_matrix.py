@@ -3,9 +3,10 @@ from pathlib import Path
 
 data_dirs = [
     Path("data/IAEA_HPGe/2024/txt"),
-    Path("data/IAEA_HPGe/2023/txt")
+    Path("data/IAEA_HPGe/2023/txt"),
+    Path("data/Baq_HPGe/txt")
 ]
-output_file = Path("data/spectrum_matrix_2023_2024.npy")
+output_file = Path("data/spectrum_matrix_IAEA_Baq.npy")
 
 # Get a list of all text files from ALL directories
 txt_files = []

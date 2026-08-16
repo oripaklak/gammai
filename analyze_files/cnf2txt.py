@@ -6,8 +6,8 @@ from read_cnf import read_cnf_file
 # ==========================================
 # SETUP DIRECTORIES
 # ==========================================
-dataset_dir = "data/ALMERA_HPGe/cnf"
-output_dir = "data/ALMERA_HPGe/txt"
+dataset_dir = "data/Baq_HPGe/cnf"
+output_dir = "data/Baq_HPGe/txt"
 
 # Create output directory if it doesn't exist
 os.makedirs(output_dir, exist_ok=True)

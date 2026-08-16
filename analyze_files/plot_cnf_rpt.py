@@ -5,8 +5,8 @@ from matplotlib.lines import Line2D
 from read_cnf import read_cnf_file
 
 # --- File Paths ---
-cnf_path = 'data/CTBT_HPGe/fc17344-160724-AEGIS.CNF'
-rpt_path = 'data/CTBT_HPGe/fc17344-160724-AEGIS.RPT'
+cnf_path = 'data/Baq_HPGe/fc17344-160724-AEGIS.CNF'
+rpt_path = 'data/Baq_HPGe/fc17344-160724-AEGIS.RPT'
 
 
 # --- Parsing Functions ---
