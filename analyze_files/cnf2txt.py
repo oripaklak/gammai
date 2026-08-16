@@ -36,10 +36,14 @@ for filepath in tqdm(all_cnf_files, desc="Converting CNF to TXT"):
         name_without_ext = os.path.splitext(base_name)[0]
         output_filename = os.path.join(output_dir, f"{name_without_ext}.txt")
 
-        # Write the counts to a text file (one channel per line)
+        # Write the counts to a text file in the required format
         with open(output_filename, 'w') as txt_file:
-            for count in counts:
-                txt_file.write(f"{int(count)}\n")
+            # 1. Write the header exactly as requested (using a tab separator)
+            txt_file.write("Channel\tCounts\n")
+
+            # 2. Iterate using enumerate to get both the index and the count
+            for channel_idx, count in enumerate(counts):
+                txt_file.write(f"{channel_idx}\t{int(count)}\n")
 
     except Exception as e:
         print(f"\nFailed to process {filepath}: {e}")
