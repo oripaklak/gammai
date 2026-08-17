@@ -13,7 +13,7 @@ from read_cnf import read_cnf_file
 # SETUP AND DATA LOADING
 # ==========================================
 dataset_dir = "data/Baq_HPGe/cnf"
-output_dir = "data/Baq_HPGe/plots1"
+output_dir = "data/Baq_HPGe/plots"
 
 os.makedirs(output_dir, exist_ok=True)
 

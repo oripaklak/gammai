@@ -3,6 +3,7 @@ from scipy import linalg
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 from scipy.stats import binomtest
+from sklearn.neighbors import NearestNeighbors
 
 def calculate_fid(real_data, fake_data, eps=1e-6, n_components=128):
     """
