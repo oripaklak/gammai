@@ -51,6 +51,7 @@ class DiffWaveLearner:
         self.model_cfg = config['model']
         self.hw_cfg = config['hardware']
         self.track_cfg = config['tracking']['wandb']
+        self.f_mem_threshold = config['metrics']['f_mem_threshold']
 
         self.autocast = torch.amp.autocast('cuda', enabled=self.hw_cfg.get('fp16', False))
         self.scaler = torch.amp.GradScaler('cuda', enabled=self.hw_cfg.get('fp16', False))
@@ -230,7 +231,7 @@ class DiffWaveLearner:
         try:
             fd_score = calculate_fid(real_np, fake_np)
             kid_score = calculate_kid(real_np, fake_np)
-            f_mem_percentage = calculate_f_mem(fake_np, real_np, k=1/3)
+            f_mem_percentage = calculate_f_mem(fake_np, real_np, k=self.f_mem_threshold)
             if self.track_cfg['enabled']:
                 import wandb
                 wandb.log({
