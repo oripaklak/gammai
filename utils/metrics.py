@@ -2,8 +2,8 @@ import numpy as np
 from scipy import linalg
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
-from scipy.stats import binomtest
 from sklearn.neighbors import NearestNeighbors
+from scipy.stats import norm
 
 def calculate_fid(real_data, fake_data, eps=1e-6, n_components=128):
     """
@@ -75,7 +75,8 @@ def calculate_kid(real_data, fake_data, degree=3, coef0=1):
 
 def calculate_ndb(real_data, fake_data, n_clusters=50, alpha=0.05, random_state=42):
     """
-    Computes the Number of Statistically-Different Bins (NDB) metric for 1D spectra.
+    Computes the Number of Statistically-Different Bins (NDB) metric for 1D spectra
+    using the correct Two-Sample Z-Test for Proportions.
 
     Parameters:
     -----------
@@ -86,7 +87,7 @@ def calculate_ndb(real_data, fake_data, n_clusters=50, alpha=0.05, random_state=
     n_clusters : int, optional
         Number of clusters (bins) $K$ to partition the data space. Default is 50.
     alpha : float, optional
-        Significance level for the binomial hypothesis test. Default is 0.05.
+        Significance level for the hypothesis test. Default is 0.05.
     random_state : int, optional
         Random seed for reproducibility of KMeans.
 
@@ -98,8 +99,8 @@ def calculate_ndb(real_data, fake_data, n_clusters=50, alpha=0.05, random_state=
     X = np.atleast_2d(real_data)
     Y = np.atleast_2d(fake_data)
 
-    m = X.shape[0]  # Number of real samples
-    n = Y.shape[0]  # Number of fake samples
+    m = X.shape[0]  # Number of real samples (N_p)
+    n = Y.shape[0]  # Number of fake samples (N_q)
 
     # Step 1: Fit KMeans clustering exclusively on the REAL data space
     kmeans = KMeans(n_clusters=n_clusters, random_state=random_state, n_init='auto')
@@ -113,25 +114,36 @@ def calculate_ndb(real_data, fake_data, n_clusters=50, alpha=0.05, random_state=
     real_counts = np.bincount(real_labels, minlength=n_clusters)
     fake_counts = np.bincount(fake_labels, minlength=n_clusters)
 
-    # Expected proportion of samples falling into each bin from the real dataset
-    p_real = real_counts / m
-
-    # Step 3: Perform binomial tests for each bin
-    # Null hypothesis: The probability of a generated sample falling into bin i is p_real[i].
+    # Step 3: Perform two-sample Z-test for proportions for each bin
     ndb_score = 0
     bin_results = []
 
     for i in range(n_clusters):
-        k_success = fake_counts[i]  # Number of fake samples in bin i
-        p_prob = p_real[i]  # Expected probability from real distribution
+        count_real = real_counts[i]
+        count_fake = fake_counts[i]
 
-        # If a bin has zero real samples, handle edge cases
-        if p_prob == 0:
-            p_val = 0.0 if k_success == 0 else 1.0
+        # Calculate individual proportions (P_p and P_q)
+        p_p = count_real / m
+        p_q = count_fake / n
+
+        # Calculate pooled sample proportion (P)
+        P_pooled = (count_real + count_fake) / (m + n)
+
+        # Handle edge cases (if a bin is totally empty or contains literally every sample)
+        if P_pooled == 0 or P_pooled == 1:
+            p_val = 1.0  # No variance, cannot prove statistical difference
         else:
-            # Two-sided binomial test
-            res = binomtest(k_success, n=n, p=p_prob)
-            p_val = res.pvalue
+            # Calculate Standard Error (SE)
+            se = np.sqrt(P_pooled * (1 - P_pooled) * (1 / m + 1 / n))
+
+            if se == 0:
+                p_val = 1.0
+            else:
+                # Calculate Z-score
+                z = (p_p - p_q) / se
+
+                # Calculate two-tailed p-value from the Z-score
+                p_val = 2.0 * norm.cdf(-np.abs(z))
 
         # Check if difference is statistically significant
         is_different = (p_val < alpha)
@@ -140,8 +152,8 @@ def calculate_ndb(real_data, fake_data, n_clusters=50, alpha=0.05, random_state=
 
         bin_results.append({
             'bin': i,
-            'real_count': real_counts[i],
-            'fake_count': fake_counts[i],
+            'real_count': count_real,
+            'fake_count': count_fake,
             'p_value': p_val,
             'significant_diff': is_different
         })
@@ -152,10 +164,10 @@ def calculate_ndb(real_data, fake_data, n_clusters=50, alpha=0.05, random_state=
         'bin_details': bin_results
     }
 
-
 def calculate_f_mem(gen_data, real_data, k=1 / 3):
     """
-    Calculates the number (and fraction) of memorized generated samples.
+    Calculates the number (and fraction) of memorized generated samples,
+    and prints distance statistics.
 
     Args:
         gen_data (np.ndarray): 2D array of generated spectra (N_gen, length).
@@ -163,24 +175,20 @@ def calculate_f_mem(gen_data, real_data, k=1 / 3):
         k (float): The threshold for the distance ratio (e.g., 1/3, 1/2).
 
     Returns:
-        int: Number of memorized samples (f_mem).
-        float: Fraction of memorized samples.
+        int: Number of memorized samples (f_mem_count).
+        float: Percentage of memorized samples.
     """
     # 1. Fit a Nearest Neighbors tree on the real dataset
-    # We set n_neighbors=2 to get both a^mu1 and a^mu2
     nn = NearestNeighbors(n_neighbors=2, metric='euclidean')
     nn.fit(real_data)
 
     # 2. Find the 2 closest real samples for every generated sample
-    # distances will be a matrix of shape (N_gen, 2)
     distances, _ = nn.kneighbors(gen_data)
 
-    d1 = distances[:, 0]  # ||x - a^mu1||
-    d2 = distances[:, 1]  # ||x - a^mu2||
+    d1 = distances[:, 0]  # ||x - a^mu1|| (Distance to 1st nearest neighbor)
+    d2 = distances[:, 1]  # ||x - a^mu2|| (Distance to 2nd nearest neighbor)
 
     # 3. Calculate the ratio safely
-    # If d2 is exactly 0 (which happens if there are duplicate real samples),
-    # we prevent a divide-by-zero error.
     with np.errstate(divide='ignore', invalid='ignore'):
         ratios = np.where(d2 == 0, 0.0, d1 / d2)
 
@@ -188,13 +196,23 @@ def calculate_f_mem(gen_data, real_data, k=1 / 3):
     is_memorized = ratios < k
 
     f_mem_count = int(np.sum(is_memorized))
-    f_mem_percentage = float(np.mean(is_memorized)) * 100
+    f_mem_percentage = float(np.mean(is_memorized)) * 100.0
+
+    # --- NEW: Calculate and print min/max stats ---
+    min_d1, max_d1 = float(np.min(d1)), float(np.max(d1))
+    min_d2, max_d2 = float(np.min(d2)), float(np.max(d2))
+    min_ratio, max_ratio = float(np.min(ratios)), float(np.max(ratios))
+
+    print("\n   [F_MEM Distance Stats]")
+    print(f"   -> 1st Nearest Neighbor (d1) | Lowest: {min_d1:8.2f} | Max: {max_d1:8.2f}")
+    print(f"   -> 2nd Nearest Neighbor (d2) | Lowest: {min_d2:8.2f} | Max: {max_d2:8.2f}")
+    print(f"   -> Ratio (d1/d2)             | Lowest: {min_ratio:8.4f} | Max: {max_ratio:8.4f}")
 
     return f_mem_percentage
 
 if __name__ == "__main__":
     # 1. Load the data
-    data_path = "data/spectrum_matrix_2023_2024.npy"
+    data_path = "data/spectrum_matrix_IAEA.npy"
     print(f"Loading data from {data_path}...")
     try:
         data = np.load(data_path).astype(np.float32)
@@ -243,6 +261,9 @@ if __name__ == "__main__":
 
     baseline_kid = calculate_kid(half_a, half_b)
     print(f"Baseline Polynomial MMD (KID):  {baseline_kid:.6f}")
+
+    baseline_f_mem = calculate_f_mem(half_a, half_b)
+    print(f"Baseline fractional memorization (f_mem):  {baseline_f_mem:.6f}")
 
     # --- NEW: Calculate Baseline NDB ---
     # Using the default 50 clusters/bins defined in your function
