@@ -546,8 +546,15 @@ def main():
     layers = config['model']['residual_layers']
     channels = config['model']['residual_channels']
     schedule_type = config['model']['schedule_type']
+    if schedule_type == "cosine":
+        end = config['model']['cosine_target_end']
+    elif schedule_type == "linear":
+        end = config['model']['beta_final']
+    else:
+        end = "unknown"
+    end_str = f"{end:.4g}" if isinstance(end, (float, int)) else end
     param_str = format_param_count(total_params)
-    run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{train_cfg['batch_size']}_lr{train_cfg['learning_rate']}_{schedule_type}_ep{train_cfg['epochs']}"
+    run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{train_cfg['batch_size']}_{schedule_type}-{end_str}_ep{train_cfg['epochs']}_IAEA_Baq"
     run_dir = os.path.join(path_cfg['checkpoints_dir'], run_name)
 
     # Determine replica count based on YAML override or available GPUs
