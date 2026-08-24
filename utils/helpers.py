@@ -86,6 +86,33 @@ def format_param_count(num_params):
     return f"{num_params}"
 
 
+def generate_run_name(config, total_params):
+    """
+    Generates a standardized, descriptive directory name for a training run
+    based on the model and training configurations.
+    """
+    layers = config['model']['residual_layers']
+    channels = config['model']['residual_channels']
+    schedule_type = config['model']['schedule_type']
+
+    # Safely extract the schedule's end value
+    if schedule_type == "cosine":
+        end = config['model'].get('cosine_target_end', "unknown")
+    elif schedule_type == "linear":
+        end = config['model'].get('beta_final', "unknown")
+    else:
+        end = "unknown"
+
+    end_str = f"{end:.4g}" if isinstance(end, (float, int)) else end
+    param_str = format_param_count(total_params)
+
+    batch_size = config['training']['batch_size']
+    epochs = config['training']['epochs']
+
+    run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{batch_size}_{schedule_type}-{end_str}_ep{epochs}_IAEA_Baq"
+
+    return run_name
+
 def get_noise_schedule(model_cfg):
     """Generates the beta noise schedule and cumulative alpha_bar based on config."""
     T = model_cfg['T']
@@ -277,7 +304,7 @@ if __name__ == '__main__':
     cosine_cfg = base_model_cfg.copy()
     cosine_cfg['schedule_type'] = 'cosine'
     cosine_cfg['cosine_s'] = 0.008
-    cosine_cfg['cosine_target_end'] = 0.13
+    cosine_cfg['cosine_target_end'] = 0.01
     beta_cos, alpha_cos = get_noise_schedule(cosine_cfg)
 
     # --- 2. Setup Directory ---

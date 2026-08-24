@@ -20,7 +20,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils.dataset import from_path
 from utils.helpers import (load_config, set_seed, count_parameters, format_param_count, register_graceful_shutdown,
-                           get_noise_schedule, plot_noise_schedule)
+                           get_noise_schedule, plot_noise_schedule, generate_run_name)
 from utils.metrics import calculate_fid, calculate_kid, calculate_f_mem
 from models.diffwave import DiffWave
 from inference_diffwave import run_reverse_diffusion_loop
@@ -522,7 +522,8 @@ def _get_free_port():
 
 def main():
     parser = argparse.ArgumentParser(description='Train 1-D DiffWave Model')
-    parser.add_argument("--exp", type=str, default="configs/experiments/diffwave_base.yaml", help="Path to the experiment config")
+    parser.add_argument("--exp", type=str, default="configs/experiments/diffwave_base.yaml",
+                        help="Path to the experiment config")
     parser.add_argument("--model", type=str, default="configs/models/diffwave.yaml", help="Path to the model config")
     args = parser.parse_args()
 
@@ -540,21 +541,10 @@ def main():
     total_params = count_parameters(temp_model)
     # Save it to config so we don't have to calculate it again in _train_impl
     config['model']['total_params'] = total_params
-    del temp_model  # Free up memory immediatel
+    del temp_model  # Free up memory immediately
 
-    # Auto-generate a unique checkpoint directory based on training AND model params
-    layers = config['model']['residual_layers']
-    channels = config['model']['residual_channels']
-    schedule_type = config['model']['schedule_type']
-    if schedule_type == "cosine":
-        end = config['model']['cosine_target_end']
-    elif schedule_type == "linear":
-        end = config['model']['beta_final']
-    else:
-        end = "unknown"
-    end_str = f"{end:.4g}" if isinstance(end, (float, int)) else end
-    param_str = format_param_count(total_params)
-    run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{train_cfg['batch_size']}_{schedule_type}-{end_str}_ep{train_cfg['epochs']}_IAEA_Baq"
+    # Auto-generate a unique checkpoint directory
+    run_name = generate_run_name(config, total_params)
     run_dir = os.path.join(path_cfg['checkpoints_dir'], run_name)
 
     # Determine replica count based on YAML override or available GPUs
