@@ -15,12 +15,12 @@ To prepare the dataset:
 ## Requirements
 First, create an Anaconda environment with the required packages:
 ```bash
-conda create --name gammai python=3.10 numpy pytorch scipy scikit-learn matplotlib pyyaml tqdm wandb -c pytorch -y
-```
-
-Then, activate your environment:
-```bash
+conda create --name gammai python=3.10.20 pyyaml=6.0.3 -y
 conda activate gammai
+```
+Then, install the remaining dependencies using `pip`:
+```bash
+pip install torch==2.6.0 torchvision torchaudio numpy==1.26.4 scipy==1.15.3 scikit-learn==1.7.2 matplotlib==3.10.9 tqdm==4.67.3 wandb==0.28.0
 ```
 
 ## Project Structure
