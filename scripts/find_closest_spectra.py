@@ -62,7 +62,8 @@ def find_and_plot_closest_spectra(results_dir):
 
     data_dirs = [
         "data/IAEA_HPGe/2024/txt",
-        "data/IAEA_HPGe/2023/txt"
+        "data/IAEA_HPGe/2023/txt",
+        "data/Baq_HPGe/txt"
     ]
 
     # 1. Load and group the real data
@@ -113,7 +114,7 @@ def find_and_plot_closest_spectra(results_dir):
             f.write(f"{i:03d} | {target_bin:10d} | {best_dist:11.4f} | {closest_file_path}\n")
 
             # Pass the trimmed version for plotting so the axes match perfectly
-            _plot_side_by_side(gen_spec_trimmed, best_real_spec, closest_file_path, best_dist, i, retrieval_dir)
+            _plot_side_by_side(gen_spec_trimmed, best_real_spec, closest_file_path, best_dist, i+1, retrieval_dir)
 
     print("Retrieval analysis complete!")
 
@@ -128,12 +129,13 @@ def _plot_side_by_side(gen_spec, real_spec, closest_file_path, dist, gen_idx, sa
     positive_vals = combined[combined > 0]  # Filter out zeros for log scale
 
     if len(positive_vals) > 0:
-        ymin = max(1.0, float(np.min(positive_vals)) * 0.5)  # Give a little breathing room at the bottom
+        ymin = max(0.1, float(np.min(positive_vals)) * 0.5)  # Give a little breathing room at the bottom
         ymax = float(np.max(positive_vals)) * 1.5  # Give a little breathing room at the top
     else:
-        ymin, ymax = 1.0, 1000.0
+        ymin, ymax = 0.1, 1000.0
 
     # --- Generated ---
+    gen_spec = np.where(gen_spec == 0, 0.1, gen_spec)
     axes[0].plot(gen_spec, color='blue', linewidth=1)
     axes[0].set_yscale('log')
     axes[0].set_title(f"Generated Sample {gen_idx:03d}")
@@ -144,6 +146,7 @@ def _plot_side_by_side(gen_spec, real_spec, closest_file_path, dist, gen_idx, sa
     axes[0].set_ylim(bottom=ymin, top=ymax)
 
     # --- Real ---
+    real_spec = np.where(real_spec == 0, 0.1, real_spec)
     axes[1].plot(real_spec, color='green', linewidth=1)
     axes[1].set_yscale('log')
     axes[1].set_title(f"Closest Real: {file_name}\nEuclidean  Distance: {dist:.4f}")
