@@ -50,26 +50,27 @@ project_root/
 >**Note:** Directories like `checkpoints/`, `results/`, and `wandb/` will generate their own subfolders dynamically during training and inference).
 
 ## Data Processing Pipeline
-To analyze, parse the data, and build the matrix, run the following scripts from the root directory:
+**1. Extract and Standardize Data**
+This unified script automatically detects and parses both IAEA (`.spe`) and Baq (`.cnf`) datasets. It creates standardized `spectra_txt/` (channels and counts) and `coeff_txt/` (calibration parameters) directories, while also generating a `global_calib_bounds.json` file for model normalization.
 
-**1. Visualize raw files:**
 ```bash
-python analyze_files/plot_spe.py
-python analyze_files/plot_cnf.py  
-python analyze_files/plt_npy.py
+python analyze_files/extract_dataset.py
 ```
 
-**2. Convert `.spe` to `.txt`:**
-This script creates a new directory containing `.txt` files with the extracted channels and counts.
+**2. Visualize the Dataset**
+Once the data is extracted, use this script to generate both uncalibrated (channel) and calibrated (energy) plots for all valid files.
+
 ```bash
-python analyze_files/spe2txt.py
+python analyze_files/plot_dataset.py
 ```
 
-**4. Build and save the data matrix:**
-Reads the converted `.txt` files and compiles them into a single `.npy` matrix file for machine learning or statistical analysis.
+**3. Build and Save the Data Matrix**
+Reads the standardized `.txt` files from the `spectra/` directory and compiles them into a single `.npy` matrix file for machine learning and downstream statistical analysis.
+
 ```bash
 python analyze_files/create_save_data_matrix.py
 ```
+
 ## Model Training
 Before training, you can calculate the baseline Fréchet Distance (FD) and Kernel Inception Distance (KID) scores to establish target metrics for your dataset.
 ```bash
