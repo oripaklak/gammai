@@ -2,13 +2,15 @@ import numpy as np
 import os
 import torch
 from torch.utils.data.distributed import DistributedSampler
-from utils.helpers import normalize
+from utils.helpers import normalize, normalize_coeffs
+
 
 class SignalDataset(torch.utils.data.Dataset):
     def __init__(self, paths, config):
         super().__init__()
+        self.is_calib = config.get('experiment', {}).get('calibration', False)
 
-        # Load the raw 2D matrix
+        # 1. Load the raw 2D spectrum matrix
         raw_matrix = np.load(paths[0]).astype(np.float32)
 
         print(f"\n[INFO] Loaded dataset from {paths[0]} with shape: {raw_matrix.shape}")
@@ -22,11 +24,30 @@ class SignalDataset(torch.utils.data.Dataset):
         # Apply normalization using the helper function
         self.matrix = normalize(raw_matrix, self.max_val)
 
+        # 2. Conditionally load and normalize the coefficients
+        if self.is_calib:
+            coeff_path = paths[0].replace("spectrum_matrix", "coeff_matrix")
+
+            if not os.path.exists(coeff_path):
+                raise FileNotFoundError(f"Calibration enabled but coeff matrix missing at: {coeff_path}")
+
+            raw_coeffs = np.load(coeff_path).astype(np.float32)
+            print(f"[INFO] Loaded coefficients from {coeff_path} with shape: {raw_coeffs.shape}")
+
+            # Apply Min-Max scaling to the entire N x 4 matrix at once
+            self.coeffs = normalize_coeffs(raw_coeffs)
+
     def __len__(self):
         return self.matrix.shape[0]
 
     def __getitem__(self, idx):
         signal = self.matrix[idx]
+
+        # 3. Concatenate L and 4 into L+4 dynamically
+        if self.is_calib:
+            coeff = self.coeffs[idx]
+            signal = np.concatenate([signal, coeff], axis=0)
+
         return {
             'signal': signal
         }
