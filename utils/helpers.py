@@ -6,7 +6,7 @@ import os
 import matplotlib.pyplot as plt
 import signal
 import sys
-
+import json
 
 def register_graceful_shutdown(learner, config):
     """Registers signal handlers to save a checkpoint on Ctrl+C or kill."""
@@ -94,6 +94,7 @@ def generate_run_name(config, total_params):
     layers = config['model']['residual_layers']
     channels = config['model']['residual_channels']
     schedule_type = config['model']['schedule_type']
+    calib = config['experiment']['calibration']
 
     # Safely extract the schedule's end value
     if schedule_type == "cosine":
@@ -109,7 +110,10 @@ def generate_run_name(config, total_params):
     batch_size = config['training']['batch_size']
     epochs = config['training']['epochs']
 
-    run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{batch_size}_{schedule_type}-{end_str}_ep{epochs}_IAEA_Baq"
+    if not calib:
+        run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{batch_size}_{schedule_type}-{end_str}_ep{epochs}_IAEA_Baq"
+    else:
+        run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{batch_size}_{schedule_type}-{end_str}_ep{epochs}_calib_IAEA_Baq"
 
     return run_name
 
@@ -208,8 +212,38 @@ def unnormalize(signal, max_val):
         return torch.expm1(signal * max_val)
     else:
         return np.expm1(signal * max_val)
+def normalize_coeffs(coeffs, bounds_path="data/global_calib_bounds.json"):
+    """
+    Applies independent Min-Max scaling to the 4 calibration parameters.
+    Maps values to the [0, 1] range based on global bounds.
+    """
+    with open(bounds_path, "r") as f:
+        bounds = json.load(f)
 
-def plot_and_save_spectra(generated_counts, save_dir, model_name):
+    calib_min = np.array(bounds["calib_min"])
+    calib_max = np.array(bounds["calib_max"])
+
+    # Safe denominator to prevent division by zero
+    denominator = np.where(calib_max - calib_min == 0, 1e-9, calib_max - calib_min)
+
+    norm_coeffs = (coeffs - calib_min) / denominator
+    return norm_coeffs
+def unnormalize_coeffs(norm_coeffs, bounds_path="data/global_calib_bounds.json"):
+    """
+    Reverses the Min-Max scaling for the calibration parameters,
+    returning them to their original orders of magnitude.
+    """
+    with open(bounds_path, "r") as f:
+        bounds = json.load(f)
+
+    calib_min = np.array(bounds["calib_min"])
+    calib_max = np.array(bounds["calib_max"])
+
+    raw_coeffs = norm_coeffs * (calib_max - calib_min) + calib_min
+    return raw_coeffs
+
+
+def plot_and_save_spectra(generated_counts, save_dir, model_name, gen_coeffs=None):
     """Plots and saves a batch of generated spectra to the specified directory."""
     num_samples = generated_counts.shape[0]
     L = generated_counts.shape[1]
@@ -220,29 +254,40 @@ def plot_and_save_spectra(generated_counts, save_dir, model_name):
         counts = generated_counts[i]
 
         plt.figure(figsize=(10, 5))
-        plt.plot(counts, color='blue', linewidth=1)
 
-        # --- Find the last non-zero channel ---
+        # --- Calibration Logic ---
+        if gen_coeffs is not None:
+            coeffs = gen_coeffs[i]
+            channels = np.arange(L)
+            x_axis = np.polyval(coeffs[::-1], channels)
+            x_label = "Energy (keV)"
+            title_ext = "(Calibrated)"
+        else:
+            x_axis = np.arange(L)
+            x_label = "Channel"
+            title_ext = "(Uncalibrated)"
+
+        plt.plot(x_axis, counts, color='blue', linewidth=1)
+
+        # --- Find the last non-zero channel/energy ---
         non_zero_indices = np.nonzero(counts)[0]
         if len(non_zero_indices) > 0:
-            max_x = non_zero_indices[-1]
-            # Crop the X-axis up to the last value + 50 channels for aesthetic padding
-            plt.xlim(0, max_x + 50)
+            max_idx = non_zero_indices[-1]
+            max_x = x_axis[max_idx]
+            pad = 50 if gen_coeffs is None else (x_axis[min(max_idx + 50, L - 1)] - max_x)
+            plt.xlim(max(0, x_axis[0]), max_x + pad)
         else:
-            # Edge case fallback if the entire array is zeros
-            plt.xlim(0, L)
+            plt.xlim(max(0, x_axis[0]), x_axis[-1])
 
         plt.yscale('log')
-        plt.title(f"Generated Spectrum {i + 1} of {num_samples}\nModel: {model_name}")
-        plt.xlabel("Channel")
+        plt.title(f"Generated Spectrum {i + 1} of {num_samples} {title_ext}\nModel: {model_name}")
+        plt.xlabel(x_label)
         plt.ylabel("Counts (Log Scale)")
         plt.grid(True, which="both", ls="--", alpha=0.5)
         plt.tight_layout()
 
-        # Save each plot
         plot_path = os.path.join(save_dir, f"spectrum_{i + 1:03d}.png")
         plt.savefig(plot_path, dpi=300)
-
         plt.close()
 
 def plot_diffusion_step(track_path, single_signal, noise_scale_val, loop_idx, label, max_val=None):
@@ -263,7 +308,7 @@ def plot_diffusion_step(track_path, single_signal, noise_scale_val, loop_idx, la
     ax.plot(sig_np, color='blue', linewidth=1)
 
     # Dynamic cropping ONLY for the final clean step
-    if label == "final_0":
+    if label == "0":
         non_zero_indices = np.nonzero(sig_np)[0]
         if len(non_zero_indices) > 0:
             max_x = non_zero_indices[-1]
