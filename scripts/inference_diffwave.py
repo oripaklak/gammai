@@ -10,7 +10,9 @@ from tqdm import tqdm
 # Add the project root to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from utils.helpers import load_config, setup_device, plot_and_save_spectra, unnormalize, get_noise_schedule, plot_diffusion_step
+from utils.helpers import (load_config, setup_device, plot_and_save_spectra,
+                           unnormalize, unnormalize_coeffs,
+                           get_noise_schedule, plot_diffusion_step)
 from models.diffwave import DiffWave
 
 
@@ -83,7 +85,7 @@ def run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=Non
         # Reverse diffusion loop: gradually denoise from step T down to 0
         for n in tqdm(range(len(alpha) - 1, -1, -1), desc="Denoising Progress"):
             if n == len(alpha) - 1 and n in track_indices:
-                plot_diffusion_step(current_track_path, signal[0], noise_scale[n].item(), n, "initial_T", max_val)
+                plot_diffusion_step(current_track_path, signal[0], noise_scale[n].item(), n, "T", max_val)
 
             c1 = 1 / alpha[n] ** 0.5
             c2 = beta[n] / (1 - alpha_cum[n]) ** 0.5
@@ -97,7 +99,7 @@ def run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=Non
                 signal += sigma * noise
 
             if n in track_indices and n != len(alpha) - 1:
-                label = "final_0" if n == 0 else f"mid_{n}"
+                label = f"{n}"
                 plot_diffusion_step(current_track_path, signal[0], noise_scale[n].item(), n, label, max_val)
 
         # Force final output to normalized range
@@ -136,6 +138,9 @@ def execute_inference_pipeline(config, device, scaling_path, weights_path):
     gen_cfg = config['generation']
     fast_sampling = gen_cfg.get('fast_sampling', True)
 
+    is_calib = config.get('experiment', {}).get('calibration', False)
+    num_calib_params = config.get('experiment', {}).get('num_calib_params', 4)
+
     if fast_sampling:
         inference_schedule = config['model'].get('inference_noise_schedule', [])
         num_fast_steps = len(inference_schedule)
@@ -152,10 +157,22 @@ def execute_inference_pipeline(config, device, scaling_path, weights_path):
     signal = load_model_and_generate(config=config, device=device, track_dir=track_dir, max_val=max_val)
 
     generated_scaled = signal.cpu().numpy()
-    generated_counts = unnormalize(generated_scaled, max_val)
-    generated_counts = np.clip(np.round(generated_counts), a_min=0, a_max=None)
 
-    return generated_counts, save_dir, model_name
+    # --- Split and Un-normalize Logic ---
+    if is_calib:
+        gen_spectrum_norm = generated_scaled[:, :-num_calib_params]
+        gen_coeffs_norm = generated_scaled[:, -num_calib_params:]
+
+        generated_counts = unnormalize(gen_spectrum_norm, max_val)
+        generated_counts = np.clip(np.round(generated_counts), a_min=0, a_max=None)
+
+        gen_coeffs = unnormalize_coeffs(gen_coeffs_norm)
+    else:
+        generated_counts = unnormalize(generated_scaled, max_val)
+        generated_counts = np.clip(np.round(generated_counts), a_min=0, a_max=None)
+        gen_coeffs = None
+
+    return generated_counts, gen_coeffs, save_dir, model_name
 
 
 def main(args):
@@ -164,6 +181,12 @@ def main(args):
     and triggers the main pipeline.
     """
     config = load_config(args.exp, args.model)
+    is_calib = config.get('experiment', {}).get('calibration', False)
+    num_calib_params = config.get('experiment', {}).get('num_calib_params', 4)
+
+    if is_calib:
+        config['model']['signal_len'] += num_calib_params
+
     device = setup_device(config['hardware'], mode="inference")
     weights_path = config['generation']['model_path']
     num_samples = config['generation']['num_samples_to_generate']
@@ -171,11 +194,16 @@ def main(args):
 
     print(f"Generating {num_samples} samples from {weights_path}...")
 
-    generated_counts, save_dir, model_name = execute_inference_pipeline(
+    generated_counts, gen_coeffs, save_dir, model_name = execute_inference_pipeline(
         config, device, scaling_path, weights_path
     )
 
-    plot_and_save_spectra(generated_counts, save_dir, model_name)
+    if is_calib:
+        plot_and_save_spectra(generated_counts, save_dir, model_name, gen_coeffs)
+        coeff_path = os.path.join(save_dir, f"all_{num_samples}_coeffs.npy")
+        np.save(coeff_path, gen_coeffs)
+    else:
+        plot_and_save_spectra(generated_counts, save_dir, model_name)
 
     data_path = os.path.join(save_dir, f"all_{num_samples}_samples.npy")
     np.save(data_path, generated_counts)
