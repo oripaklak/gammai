@@ -125,7 +125,9 @@ To verify the model generates novel data rather than memorizing the training set
 Point `--results_dir` to the folder containing your generated `all_N_samples.npy` file:
 
 ```bash
-python scripts/find_closest_spectra.py --results_dir results/YOUR_RUN_NAME/YOUR_TIMESTAMP_FOLDER
-```
+python scripts/find_closest_spectra.py \
+  --results_dir results/YOUR_RUN_NAME/YOUR_TIMESTAMP_FOLDER \
+  --calib_weight 5000
+  ```
 
 > **Note:** You can modify the script directly to change which `.txt` training data files are used for the comparison.
