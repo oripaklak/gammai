@@ -533,6 +533,20 @@ def main():
     hw_cfg = config["hardware"]
     path_cfg = config["paths"]
 
+    # Dynamic Path Resolution
+    base_dir = path_cfg["base_dir"]
+    dataset_name = path_cfg["dataset_name"]
+    config['paths']['data_path'] = f"{base_dir}/spectrum_matrix_{dataset_name}.npy"
+    config['paths']['scaling_factor_path'] = f"{base_dir}/scaling_factor_{dataset_name}.npy"
+
+    # Dynamic Calibration Dimension Override
+    is_calib = config.get('experiment', {}).get('calibration', False)
+    num_calib_params = config.get('experiment', {}).get('num_calib_params', 4)
+
+    if is_calib:
+        config['model']['signal_len'] += num_calib_params
+        print(f"Calibration enabled: Adjusted model signal_len to {config['model']['signal_len']}")
+
     # Set Random Seed for Reproducibility
     set_seed(train_cfg["seed"])
 
