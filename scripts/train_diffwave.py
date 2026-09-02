@@ -540,8 +540,8 @@ def main():
     config['paths']['scaling_factor_path'] = f"{base_dir}/scaling_factor_{dataset_name}.npy"
 
     # Dynamic Calibration Dimension Override
-    is_calib = config.get('experiment', {}).get('calibration', False)
-    num_calib_params = config.get('experiment', {}).get('num_calib_params', 4)
+    is_calib = config.get('calibration', {}).get('enabled', False)
+    num_calib_params = config.get('calibration', {}).get('num_params', 4)
 
     if is_calib:
         config['model']['signal_len'] += num_calib_params

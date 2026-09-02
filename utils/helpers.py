@@ -94,7 +94,7 @@ def generate_run_name(config, total_params):
     layers = config['model']['residual_layers']
     channels = config['model']['residual_channels']
     schedule_type = config['model']['schedule_type']
-    calib = config['experiment']['calibration']
+    calib = config['calibration']['enabled']
 
     # Safely extract the schedule's end value
     if schedule_type == "cosine":

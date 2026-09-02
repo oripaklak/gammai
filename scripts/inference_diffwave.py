@@ -127,7 +127,7 @@ def load_model_and_generate(config, device=torch.device('cuda'), track_dir=None,
     return run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=track_dir, global_step="inference", max_val=max_val)
 
 
-def execute_inference_pipeline(config, device, scaling_path, weights_path):
+def execute_inference_pipeline(config, device, scaling_path, weights_path, is_calib, num_calib_params):
     """
     Handles all IO operations: setting up timestamped directories, checking config settings (like T=6),
     loading the dataset scaling factor, and unnormalizing the final generated arrays into real-world values.
@@ -137,9 +137,6 @@ def execute_inference_pipeline(config, device, scaling_path, weights_path):
 
     gen_cfg = config['generation']
     fast_sampling = gen_cfg.get('fast_sampling', True)
-
-    is_calib = config.get('experiment', {}).get('calibration', False)
-    num_calib_params = config.get('experiment', {}).get('num_calib_params', 4)
 
     if fast_sampling:
         inference_schedule = config['model'].get('inference_noise_schedule', [])
@@ -181,8 +178,8 @@ def main(args):
     and triggers the main pipeline.
     """
     config = load_config(args.exp, args.model)
-    is_calib = config.get('experiment', {}).get('calibration', False)
-    num_calib_params = config.get('experiment', {}).get('num_calib_params', 4)
+    is_calib = config.get('calibration', {}).get('enabled', False)
+    num_calib_params = config.get('calibration', {}).get('num_params', 4)
 
     if is_calib:
         config['model']['signal_len'] += num_calib_params
@@ -195,7 +192,7 @@ def main(args):
     print(f"Generating {num_samples} samples from {weights_path}...")
 
     generated_counts, gen_coeffs, save_dir, model_name = execute_inference_pipeline(
-        config, device, scaling_path, weights_path
+        config, device, scaling_path, weights_path, is_calib, num_calib_params
     )
 
     if is_calib:

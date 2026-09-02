@@ -8,7 +8,7 @@ from utils.helpers import normalize, normalize_coeffs
 class SignalDataset(torch.utils.data.Dataset):
     def __init__(self, paths, config):
         super().__init__()
-        self.is_calib = config.get('experiment', {}).get('calibration', False)
+        self.is_calib = config.get('calibration', {}).get('enabled', False)
 
         # 1. Load the raw 2D spectrum matrix
         raw_matrix = np.load(paths[0]).astype(np.float32)
