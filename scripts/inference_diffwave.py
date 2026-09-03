@@ -187,7 +187,12 @@ def main(args):
     device = setup_device(config['hardware'], mode="inference")
     weights_path = config['generation']['model_path']
     num_samples = config['generation']['num_samples_to_generate']
-    scaling_path = config['paths']['scaling_factor_path']
+
+    # Dynamic Path Resolution
+    base_dir = config["paths"]["base_dir"]
+    dataset_name = config["paths"]["dataset_name"]
+    scaling_path = f"{base_dir}/scaling_factor_{dataset_name}.npy"
+
 
     print(f"Generating {num_samples} samples from {weights_path}...")
 
