@@ -27,12 +27,12 @@ class DiffusionEmbedding(nn.Module):
 
     def forward(self, diffusion_step):
         if diffusion_step.dtype in [torch.int32, torch.int64]:
-            x = self.embedding[diffusion_step]
+            x = self.embedding[diffusion_step] # [B,128]
         else:
-            x = self._lerp_embedding(diffusion_step)
-        x = self.projection1(x)
+            x = self._lerp_embedding(diffusion_step) # [B,128]
+        x = self.projection1(x) # [B,512]
         x = silu(x)
-        x = self.projection2(x)
+        x = self.projection2(x) # [B,512]
         x = silu(x)
         return x
 
@@ -67,13 +67,13 @@ class ResidualBlock(nn.Module):
         y = x + diffusion_step
 
         # Unconditional processing only
-        y = self.dilated_conv(y)
+        y = self.dilated_conv(y) # [B,2C,L]
 
         gate, filter = torch.chunk(y, 2, dim=1)
-        y = torch.sigmoid(gate) * torch.tanh(filter)
+        y = torch.sigmoid(gate) * torch.tanh(filter) # [B,C,L]
 
-        y = self.output_projection(y)
-        residual, skip = torch.chunk(y, 2, dim=1)
+        y = self.output_projection(y) # [B,2C,L]
+        residual, skip = torch.chunk(y, 2, dim=1) # residual [B,C,L], skip [B,C,L]
         return (x + residual) / sqrt(2.0), skip
 
 
@@ -104,11 +104,11 @@ class DiffWave(nn.Module):
 
         skip = None
         for layer in self.residual_layers:
-            x, skip_connection = layer(x, diffusion_step)
+            x, skip_connection = layer(x, diffusion_step) # [B,C,L] for each of them
             skip = skip_connection if skip is None else skip_connection + skip
 
-        x = skip / sqrt(len(self.residual_layers))
-        x = self.skip_projection(x)
+        x = skip / sqrt(len(self.residual_layers)) # [B,C,L]
+        x = self.skip_projection(x) # [B,C,L]
         x = F.relu(x)
-        x = self.output_projection(x)
+        x = self.output_projection(x) # [B,1,L]
         return x
