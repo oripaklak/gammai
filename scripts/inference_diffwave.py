@@ -16,32 +16,36 @@ from utils.helpers import (load_config, setup_device, plot_and_save_spectra,
 from models.diffwave import DiffWave
 
 
-def run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=None, global_step=None, max_val=None):
-    """
-    Takes pure Gaussian noise and iteratively removes it using the model's predictions,
-    following either the full training schedule (200 steps) or a fast inference schedule (e.g., 6 steps).
-    """
+def run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=None, global_step=None, max_val=None,
+                               conditioner=None):
     gen_cfg = config['generation']
     mod_cfg = config['model']
+    calib_cfg = config.get('calibration', {})
 
+    is_calib = calib_cfg.get('enabled', False)
+    cond_method = calib_cfg.get('conditioning_method', 'concat')
     fast_sampling = gen_cfg.get('fast_sampling', True)
     signal_len = mod_cfg['signal_len']
+
+    # FIX: Determine length based on method
+    full_len = signal_len + calib_cfg.get('num_params', 4) if (is_calib and cond_method == 'concat') else signal_len
     num_tracking_steps = gen_cfg.get('num_tracking_steps', 0)
+
+    # If FiLM is active and no conditioner was provided, sample standard normal noise as condition
+    if is_calib and cond_method == 'film' and conditioner is None:
+        conditioner = torch.randn(num_samples, calib_cfg.get('num_params', 4), device=device)
 
     with torch.no_grad():
         training_noise_schedule, talpha_cum = get_noise_schedule(mod_cfg)
         T = mod_cfg['T']
 
-        # Determine if we are fast sampling or doing full diffusion
         inference_noise_schedule = np.array(
             mod_cfg['inference_noise_schedule']) if fast_sampling else training_noise_schedule
 
-        # Get cumulative noise for the inference schedule specifically
         beta = inference_noise_schedule
         alpha = 1.0 - beta
         alpha_cum = np.cumprod(alpha)
 
-        # Map inference steps to fractional training steps (interpolation for fast sampling)
         T_steps = []
         for s in range(len(inference_noise_schedule)):
             step_found = False
@@ -53,7 +57,6 @@ def run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=Non
                     step_found = True
                     break
 
-            # Fallback for floating-point rounding misses at the edges
             if not step_found:
                 if alpha_cum[s] >= talpha_cum[0]:
                     T_steps.append(0.0)
@@ -61,37 +64,37 @@ def run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=Non
                     T_steps.append(float(T - 1))
 
         T_steps = np.array(T_steps, dtype=np.float32)
-        if fast_sampling:
-            print(f"Fast Sampling T_steps: {T_steps}")
 
-        # Start inference with pure Gaussian noise (x_T)
-        signal = torch.randn(num_samples, signal_len, device=device)
+        signal = torch.randn(num_samples, full_len, device=device)
         noise_scale = torch.from_numpy(alpha_cum ** 0.5).float().to(device)
 
         if track_dir and num_tracking_steps > 0:
             last_10_steps = list(range(10))
             extra_5_steps = [199, 150, 100, 50, 20]
             track_indices = set(last_10_steps + extra_5_steps)
-
-            if global_step == "inference":
-                current_track_path = track_dir
-            else:
-                current_track_path = os.path.join(track_dir, f"step_{global_step}")
-
+            current_track_path = track_dir if global_step == "inference" else os.path.join(track_dir,
+                                                                                           f"step_{global_step}")
             os.makedirs(current_track_path, exist_ok=True)
         else:
             track_indices = set()
 
-        # Reverse diffusion loop: gradually denoise from step T down to 0
         for n in tqdm(range(len(alpha) - 1, -1, -1), desc="Denoising Progress"):
+            # FIX: Determine current conditioner for step
+            step_conditioner = signal[:, -4:] if (is_calib and cond_method == 'concat') else conditioner
+
             if n == len(alpha) - 1 and n in track_indices:
-                plot_diffusion_step(current_track_path, signal[0], noise_scale[n].item(), n, "T", max_val)
+                signal_part = signal[0, :-4] if (is_calib and cond_method == 'concat') else signal[0]
+                calib_part = signal[0, -4:] if (is_calib and cond_method == 'concat') else (
+                    step_conditioner[0] if step_conditioner is not None else None)
+                plot_diffusion_step(current_track_path, signal_part, noise_scale[n].item(), n, "T", max_val,
+                                    calib_params=calib_part)
 
             c1 = 1 / alpha[n] ** 0.5
             c2 = beta[n] / (1 - alpha_cum[n]) ** 0.5
 
-            # Predict noise and subtract it
-            signal = c1 * (signal - c2 * model(signal, torch.tensor([T_steps[n]], device=signal.device)).squeeze(1))
+            t_tensor = torch.full((num_samples,), T_steps[n], device=device)
+            predicted_noise = model(signal, t_tensor, conditioner=step_conditioner).squeeze(1)
+            signal = c1 * (signal - c2 * predicted_noise)
 
             if n > 0:
                 noise = torch.randn_like(signal)
@@ -100,13 +103,15 @@ def run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=Non
 
             if n in track_indices and n != len(alpha) - 1:
                 label = f"{n}"
-                plot_diffusion_step(current_track_path, signal[0], noise_scale[n].item(), n, label, max_val)
+                signal_part = signal[0, :-4] if (is_calib and cond_method == 'concat') else signal[0]
+                calib_part = signal[0, -4:] if (is_calib and cond_method == 'concat') else (
+                    step_conditioner[0] if step_conditioner is not None else None)
+                plot_diffusion_step(current_track_path, signal_part, noise_scale[n].item(), n, label, max_val,
+                                    calib_params=calib_part)
 
-        # Force final output to normalized range
         signal = torch.clamp(signal, 0.0, 1.0)
 
-    return signal
-
+    return signal, conditioner
 
 def load_model_and_generate(config, device=torch.device('cuda'), track_dir=None, max_val=None):
     """
@@ -128,20 +133,8 @@ def load_model_and_generate(config, device=torch.device('cuda'), track_dir=None,
 
 
 def execute_inference_pipeline(config, device, scaling_path, weights_path, is_calib, num_calib_params):
-    """
-    Handles all IO operations: setting up timestamped directories, checking config settings (like T=6),
-    loading the dataset scaling factor, and unnormalizing the final generated arrays into real-world values.
-    """
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     model_name = os.path.splitext(os.path.basename(weights_path))[0]
-
-    gen_cfg = config['generation']
-    fast_sampling = gen_cfg.get('fast_sampling', True)
-
-    if fast_sampling:
-        inference_schedule = config['model'].get('inference_noise_schedule', [])
-        num_fast_steps = len(inference_schedule)
-        model_name = f"{model_name}_T={num_fast_steps}"
 
     run_name = os.path.basename(os.path.dirname(weights_path))
     save_dir = f"results/{run_name}/{model_name}_{timestamp}"
@@ -151,18 +144,19 @@ def execute_inference_pipeline(config, device, scaling_path, weights_path, is_ca
     os.makedirs(track_dir, exist_ok=True)
 
     max_val = np.load(scaling_path)
-    signal = load_model_and_generate(config=config, device=device, track_dir=track_dir, max_val=max_val)
 
+    # Generate full tensor of shape (num_samples, L + 4)
+    signal, _ = load_model_and_generate(config=config, device=device, track_dir=track_dir, max_val=max_val)
     generated_scaled = signal.cpu().numpy()
 
-    # --- Split and Un-normalize Logic ---
+    # --- Slice and Un-normalize ---
     if is_calib:
-        gen_spectrum_norm = generated_scaled[:, :-num_calib_params]
-        gen_coeffs_norm = generated_scaled[:, -num_calib_params:]
+        gen_spectrum_norm = generated_scaled[:, :-num_calib_params]  # First L elements
+        gen_coeffs_norm = generated_scaled[:, -num_calib_params:]    # Last 4 elements
 
+        # Unnormalize spectrum and coefficients with their respective scaling logic
         generated_counts = unnormalize(gen_spectrum_norm, max_val)
         generated_counts = np.clip(np.round(generated_counts), a_min=0, a_max=None)
-
         gen_coeffs = unnormalize_coeffs(gen_coeffs_norm)
     else:
         generated_counts = unnormalize(generated_scaled, max_val)
@@ -173,13 +167,11 @@ def execute_inference_pipeline(config, device, scaling_path, weights_path, is_ca
 
 
 def main(args):
-    """
-    Parses terminal arguments, loads the YAML configurations, checks GPU availability,
-    and triggers the main pipeline.
-    """
     config = load_config(args.exp, args.model)
-    is_calib = config.get('calibration', {}).get('enabled', False)
-    num_calib_params = config.get('calibration', {}).get('num_params', 4)
+    calib_cfg = config.get('calibration', {})
+    is_calib = calib_cfg.get('enabled', False)
+    num_calib_params = calib_cfg.get('num_params', 4)
+    conditioning_method = calib_cfg.get('conditioning_method', 'concat')
 
     if is_calib:
         config['model']['signal_len'] += num_calib_params
@@ -188,11 +180,9 @@ def main(args):
     weights_path = config['generation']['model_path']
     num_samples = config['generation']['num_samples_to_generate']
 
-    # Dynamic Path Resolution
     base_dir = config["paths"]["base_dir"]
     dataset_name = config["paths"]["dataset_name"]
     scaling_path = f"{base_dir}/scaling_factor_{dataset_name}.npy"
-
 
     print(f"Generating {num_samples} samples from {weights_path}...")
 
@@ -200,7 +190,7 @@ def main(args):
         config, device, scaling_path, weights_path, is_calib, num_calib_params
     )
 
-    if is_calib:
+    if gen_coeffs is not None:
         plot_and_save_spectra(generated_counts, save_dir, model_name, gen_coeffs)
         coeff_path = os.path.join(save_dir, f"all_{num_samples}_coeffs.npy")
         np.save(coeff_path, gen_coeffs)
@@ -213,8 +203,7 @@ def main(args):
 
 
 if __name__ == '__main__':
-    parser = ArgumentParser(description='Runs unconditional inference for 1-D DiffWave')
-    parser.add_argument("--exp", type=str, default="configs/experiments/diffwave_base.yaml",
-                        help="Path to the experiment config")
-    parser.add_argument("--model", type=str, default="configs/models/diffwave.yaml", help="Path to the model config")
+    parser = ArgumentParser(description='Runs inference for 1-D DiffWave')
+    parser.add_argument("--exp", type=str, default="configs/experiments/diffwave_base.yaml", help="Path to experiment config")
+    parser.add_argument("--model", type=str, default="configs/models/diffwave.yaml", help="Path to model config")
     main(parser.parse_args())
