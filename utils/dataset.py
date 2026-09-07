@@ -8,49 +8,40 @@ from utils.helpers import normalize, normalize_coeffs
 class SignalDataset(torch.utils.data.Dataset):
     def __init__(self, paths, config):
         super().__init__()
-        self.is_calib = config.get('calibration', {}).get('enabled', False)
+        calib_cfg = config.get('calibration', {})
+        self.is_calib = calib_cfg.get('enabled', False)
+        self.cond_method = calib_cfg.get('conditioning_method', 'concat')
 
-        # 1. Load the raw 2D spectrum matrix
+        # Load raw spectrum matrix (N x L)
         raw_matrix = np.load(paths[0]).astype(np.float32)
-
-        print(f"\n[INFO] Loaded dataset from {paths[0]} with shape: {raw_matrix.shape}")
-        if len(raw_matrix.shape) != 2:
-            raise ValueError(f"ERROR: Expected a 2D matrix (N x L), but got shape {raw_matrix.shape}.")
-
-        # Find the global max_val required for normalization
         log_matrix = np.log1p(raw_matrix)
         self.max_val = np.max(log_matrix)
-
-        # Apply normalization using the helper function
         self.matrix = normalize(raw_matrix, self.max_val)
 
-        # 2. Conditionally load and normalize the coefficients
         if self.is_calib:
             coeff_path = paths[0].replace("spectrum_matrix", "coeff_matrix")
-
             if not os.path.exists(coeff_path):
-                raise FileNotFoundError(f"Calibration enabled but coeff matrix missing at: {coeff_path}")
-
+                raise FileNotFoundError(f"Missing coeff matrix at: {coeff_path}")
             raw_coeffs = np.load(coeff_path).astype(np.float32)
-            print(f"[INFO] Loaded coefficients from {coeff_path} with shape: {raw_coeffs.shape}")
-
-            # Apply Min-Max scaling to the entire N x 4 matrix at once
             self.coeffs = normalize_coeffs(raw_coeffs)
 
     def __len__(self):
         return self.matrix.shape[0]
 
     def __getitem__(self, idx):
-        signal = self.matrix[idx]
+        signal = self.matrix[idx]  # Shape: (L,)
 
-        # 3. Concatenate L and 4 into L+4 dynamically
         if self.is_calib:
-            coeff = self.coeffs[idx]
+            coeff = self.coeffs[idx]  # Shape: (4,)
+            # ALWAYS concatenate to create an (L + 4,) sequence
             signal = np.concatenate([signal, coeff], axis=0)
 
-        return {
-            'signal': signal
-        }
+            item = {'signal': signal}
+            if self.cond_method == 'film':
+                item['conditioner'] = coeff  # Separate tensor for FiLM layer modulation
+            return item
+
+        return {'signal': signal}
 
 
 class Collator:
@@ -59,21 +50,22 @@ class Collator:
 
     def collate(self, minibatch):
         signal_batch = np.stack([record['signal'] for record in minibatch])
-        return {
-            'signal': torch.from_numpy(signal_batch).float(),
+        batch = {
+            'signal': torch.from_numpy(signal_batch).float()
         }
+        if 'conditioner' in minibatch[0]:
+            cond_batch = np.stack([record['conditioner'] for record in minibatch])
+            batch['conditioner'] = torch.from_numpy(cond_batch).float()
+
+        return batch
 
 
 def from_path(data_dirs, config, is_distributed=False):
     dataset = SignalDataset(data_dirs, config)
-
-    # Extract the global seed from your config (assuming it is stored there)
     global_seed = config['training'].get('seed', 42)
 
-    # Pass the seed to the sampler to ensure it syncs with your global randomness
     sampler = DistributedSampler(dataset, seed=global_seed) if is_distributed else None
 
-    # Optional: explicitly seed the DataLoader's internal generator for the non-distributed shuffle
     g = torch.Generator()
     g.manual_seed(global_seed)
 
@@ -82,9 +74,9 @@ def from_path(data_dirs, config, is_distributed=False):
         batch_size=config['training']['batch_size'],
         collate_fn=Collator(config).collate,
         shuffle=(not is_distributed),
-        num_workers=0,  # Matrix is fully loaded in memory
+        num_workers=0,
         sampler=sampler,
         pin_memory=True,
         drop_last=True,
-        generator=g if not is_distributed else None  # Locks the standard shuffle
+        generator=g if not is_distributed else None
     )
