@@ -8,6 +8,7 @@ calibration:
   enabled: true
   num_params: 4
   conditioning_method: "film" # Options: "concat", "film"
+  film_location: "before_output_proj" # Options: "before_output_proj" or "after_output_proj"
 
 hardware:
   num_gpus: 2
@@ -27,7 +28,7 @@ training:
   use_pretrained_weights: false # Use for fine-tuning. Loads ONLY the neural network weights
 
 generation:
-  model_path: "checkpoints/diff_7M_L36_C128_bs16_cosine-0.01_ep1000_calib_IAEA_Baq/weights-176000.pt"
+  model_path: "checkpoints/diff_7M_L36_C128_bs16_cosine-0.01_ep1000_calib_IAEA_Baq/weights-330000.pt"
   num_samples_to_generate: 200
   fast_sampling: false
   num_tracking_steps: 10 # Set to 0 to disable tracking completely
