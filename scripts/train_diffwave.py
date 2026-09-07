@@ -248,7 +248,7 @@ class DiffWaveLearner:
         torch.set_rng_state(torch_rng_state)
         torch.cuda.set_rng_state(cuda_rng_state)
 
-    def track_forward_process(self, clean_signal, noisy_signal, noise, t_val, global_step):
+    def track_forward_process(self, clean_signal, noisy_signal, noise, t_val, global_step, calib_params=None):
         """Plots the actual noisy signal vs original clean signal for comparison."""
         T_total = self.model_cfg['T']
 
@@ -261,16 +261,23 @@ class DiffWaveLearner:
         # Map Python's 0-index back to the paper's 1-indexed math
         math_step = t_val + 1
 
+        # Format calibration coefficients string if present
+        calib_str = ""
+        if calib_params is not None:
+            coeffs = calib_params[0].cpu().numpy() if hasattr(calib_params, 'cpu') else calib_params[0]
+            coeffs_formatted = [f"{x:.4f}" for x in coeffs]
+            calib_str = f" | Calib Coeffs: [{', '.join(coeffs_formatted)}]"
+
         # --- 1. Track x_0 (The Pure Clean Signal) ---
-        # We save this standalone plot whenever x_1 is triggered
         if math_step == 1:
             x0_path = os.path.join(self.track_dir_train, "x_0")
             os.makedirs(x0_path, exist_ok=True)
 
             fig, ax = plt.subplots(figsize=(10, 4))
             ax.plot(clean_signal[0].cpu().numpy(), color="blue")
-            ax.set_title(f"Original Clean Signal (x_0)\nCaptured at Global Step: {global_step}")
+            ax.set_title(f"Original Clean Signal (x_0)\nCaptured at Global Step: {global_step}{calib_str}")
             ax.set_ylabel("Amplitude (Normalized)")
+            ax.grid(True, which="both", ls="--", alpha=0.5)
             plt.tight_layout()
             plt.savefig(os.path.join(x0_path, f"clean_signal_step{global_step}.png"))
             plt.close(fig)
@@ -288,9 +295,10 @@ class DiffWaveLearner:
         ax.plot(clean_np, label="x_0 (Original Clean Signal)", alpha=0.75, color="blue")
         ax.plot(noisy_np, label=f"x_{math_step} (Noisy Signal)", alpha=0.75, color="red", linestyle="--")
 
-        ax.set_title(f"Forward Pass Signal Comparison | Step: x_{math_step}\nCaptured at Global Step: {global_step}")
+        ax.set_title(f"Forward Pass Signal Comparison | Step: x_{math_step}\nCaptured at Global Step: {global_step}{calib_str}")
         ax.set_ylabel("Amplitude (Normalized)")
         ax.legend(loc="upper right")
+        ax.grid(True, which="both", ls="--", alpha=0.5)
         plt.tight_layout()
         plt.savefig(os.path.join(current_track_path, f"noisy_vs_clean_step{global_step}.png"))
         plt.close(fig)
@@ -360,27 +368,42 @@ class DiffWaveLearner:
         for param in self.model.parameters():
             param.grad = None
 
-        signal = features['signal']
-
-        N, T = signal.shape
-        device = signal.device
+        full_signal = features['signal']  # Shape: (B, L + 4) when is_calib is True
+        B, full_len = full_signal.shape
+        device = full_signal.device
         self.noise_level = self.noise_level.to(device)
 
+        calib_cfg = self.config.get('calibration', {})
+        is_calib = calib_cfg.get('enabled', False)
+        cond_method = calib_cfg.get('conditioning_method', 'concat')
+
+        # Condition vector for FiLM generator
+        conditioner = features.get('conditioner', None) if (is_calib and cond_method == 'film') else None
+
         with self.autocast:
-            t = torch.randint(0, len(self.noise_level), [N], device=signal.device)
+            t = torch.randint(0, len(self.noise_level), [B], device=device)
             noise_scale = self.noise_level[t].unsqueeze(1)
             noise_scale_sqrt = noise_scale ** 0.5
-            noise = torch.randn_like(signal)
-            noisy_signal = noise_scale_sqrt * signal + (1.0 - noise_scale) ** 0.5 * noise
 
-            # --- Capture Real Forward Process (Master Only) ---
+            # 1. Noise is added to the ENTIRE sequence (B, L + 4)
+            noise = torch.randn_like(full_signal)
+            noisy_signal = noise_scale_sqrt * full_signal + (1.0 - noise_scale) ** 0.5 * noise
+
+            # 2. Plotting metadata extraction (Master process only)
             if self.is_master:
-                # We track based on the dynamic t picked for the first sample in the batch
                 first_sample_t = t[0].item()
-                # Pass clean signal, noisy signal, pure noise, current t value, and global step
-                self.track_forward_process(signal[0:1], noisy_signal[0:1], noise[0:1], first_sample_t, self.step)
+                clean_sig_plot = full_signal[0:1, :-4] if is_calib else full_signal[0:1]
+                noisy_sig_plot = noisy_signal[0:1, :-4] if is_calib else noisy_signal[0:1]
+                noise_sig_plot = noise[0:1, :-4] if is_calib else noise[0:1]
+                calib_params_plot = full_signal[0:1, -4:] if is_calib else None
 
-            predicted = self.model(noisy_signal, t)
+                self.track_forward_process(
+                    clean_sig_plot, noisy_sig_plot, noise_sig_plot, first_sample_t, self.step,
+                    calib_params=calib_params_plot
+                )
+
+            # 3. Predict noise for all L + 4 channels
+            predicted = self.model(noisy_signal, t, conditioner=conditioner)
             loss = self.loss_fn(noise, predicted.squeeze(1))
 
         self.scaler.scale(loss).backward()
@@ -522,57 +545,49 @@ def _get_free_port():
 
 def main():
     parser = argparse.ArgumentParser(description='Train 1-D DiffWave Model')
-    parser.add_argument("--exp", type=str, default="configs/experiments/diffwave_base.yaml",
-                        help="Path to the experiment config")
-    parser.add_argument("--model", type=str, default="configs/models/diffwave.yaml", help="Path to the model config")
+    parser.add_argument("--exp", type=str, default="configs/experiments/diffwave_base.yaml", help="Path to experiment config")
+    parser.add_argument("--model", type=str, default="configs/models/diffwave.yaml", help="Path to model config")
     args = parser.parse_args()
 
-    # Load configuration blocks
     config = load_config(args.exp, args.model)
     train_cfg = config["training"]
     hw_cfg = config["hardware"]
     path_cfg = config["paths"]
 
-    # Dynamic Path Resolution
     base_dir = path_cfg["base_dir"]
     dataset_name = path_cfg["dataset_name"]
     config['paths']['data_path'] = f"{base_dir}/spectrum_matrix_{dataset_name}.npy"
     config['paths']['scaling_factor_path'] = f"{base_dir}/scaling_factor_{dataset_name}.npy"
 
-    # Dynamic Calibration Dimension Override
-    is_calib = config.get('calibration', {}).get('enabled', False)
-    num_calib_params = config.get('calibration', {}).get('num_params', 4)
+    calib_cfg = config.get('calibration', {})
+    is_calib = calib_cfg.get('enabled', False)
+    num_calib_params = calib_cfg.get('num_params', 4)
+    conditioning_method = calib_cfg.get('conditioning_method', 'concat')
 
     if is_calib:
         config['model']['signal_len'] += num_calib_params
         print(f"Calibration enabled: Adjusted model signal_len to {config['model']['signal_len']}")
 
-    # Set Random Seed for Reproducibility
     set_seed(train_cfg["seed"])
 
-    # Count number of parameters
     temp_model = DiffWave(config)
     total_params = count_parameters(temp_model)
-    # Save it to config so we don't have to calculate it again in _train_impl
     config['model']['total_params'] = total_params
-    del temp_model  # Free up memory immediately
+    del temp_model
 
-    # Auto-generate a unique checkpoint directory
     run_name = generate_run_name(config, total_params)
     run_dir = os.path.join(path_cfg['checkpoints_dir'], run_name)
 
-    # Determine replica count based on YAML override or available GPUs
     replica_count = hw_cfg['num_gpus'] if hw_cfg['num_gpus'] > 0 else device_count()
 
     if replica_count > 1:
         if train_cfg['batch_size'] % replica_count != 0:
-            raise ValueError(f"Batch size {train_cfg['batch_size']} is not evenly divisble by # GPUs {replica_count}.")
+            raise ValueError(f"Batch size {train_cfg['batch_size']} is not evenly divisible by # GPUs {replica_count}.")
         config['training']['batch_size'] = train_cfg['batch_size'] // replica_count
         port = _get_free_port()
         spawn(train_distributed, args=(replica_count, port, config, run_dir), nprocs=replica_count, join=True)
     else:
         train(config, run_dir)
-
 
 if __name__ == '__main__':
     main()
