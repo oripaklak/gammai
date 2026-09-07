@@ -94,9 +94,11 @@ def generate_run_name(config, total_params):
     layers = config['model']['residual_layers']
     channels = config['model']['residual_channels']
     schedule_type = config['model']['schedule_type']
-    calib = config['calibration']['enabled']
 
-    # Safely extract the schedule's end value
+    calib_cfg = config.get('calibration', {})
+    calib = calib_cfg.get('enabled', False)
+    cond_method = calib_cfg.get('conditioning_method', 'concat')
+
     if schedule_type == "cosine":
         end = config['model'].get('cosine_target_end', "unknown")
     elif schedule_type == "linear":
@@ -113,7 +115,8 @@ def generate_run_name(config, total_params):
     if not calib:
         run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{batch_size}_{schedule_type}-{end_str}_ep{epochs}_IAEA_Baq"
     else:
-        run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{batch_size}_{schedule_type}-{end_str}_ep{epochs}_calib_IAEA_Baq"
+        # Appends _concat_ or _film_ based on the configuration
+        run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{batch_size}_{schedule_type}-{end_str}_ep{epochs}_calib_{cond_method}_IAEA_Baq"
 
     return run_name
 
@@ -290,12 +293,17 @@ def plot_and_save_spectra(generated_counts, save_dir, model_name, gen_coeffs=Non
         plt.savefig(plot_path, dpi=300)
         plt.close()
 
-def plot_diffusion_step(track_path, single_signal, noise_scale_val, loop_idx, label, max_val=None):
+def plot_diffusion_step(track_path, single_signal, noise_scale_val, loop_idx, label, max_val=None, calib_params=None):
     """
-    MAIN GOAL: The Photographer.
-    A purely visual helper that saves a PNG graph of a single spectrum at a specific step in time.
+    Saves a PNG graph of a single spectrum at a specific step in the diffusion loop.
+    Supports optional calibration parameters for rendering the energy x-axis.
     """
-    sig_np = single_signal.cpu().numpy()
+    if isinstance(single_signal, torch.Tensor):
+        sig_np = single_signal.detach().cpu().numpy()
+    else:
+        sig_np = single_signal
+
+    L = len(sig_np)
 
     if max_val is not None:
         sig_np = unnormalize(sig_np, max_val)
@@ -304,32 +312,54 @@ def plot_diffusion_step(track_path, single_signal, noise_scale_val, loop_idx, la
     else:
         y_label = "Amplitude (Normalized)"
 
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(sig_np, color='blue', linewidth=1)
+    # --- Calibration X-Axis Handling ---
+    if calib_params is not None:
+        if isinstance(calib_params, torch.Tensor):
+            calib_np = calib_params.detach().cpu().numpy()
+        else:
+            calib_np = np.array(calib_params)
 
-    # Dynamic cropping ONLY for the final clean step
+        try:
+            coeffs = unnormalize_coeffs(calib_np)
+        except Exception:
+            coeffs = calib_np
+
+        channels = np.arange(L)
+        x_axis = np.polyval(coeffs[::-1], channels)
+        x_label = "Energy (keV)"
+        title_ext = " | Calibrated"
+    else:
+        x_axis = np.arange(L)
+        x_label = "Channel"
+        title_ext = ""
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(x_axis, sig_np, color='blue', linewidth=1)
+
+    # Dynamic cropping for the final step (label == "0")
     if label == "0":
         non_zero_indices = np.nonzero(sig_np)[0]
         if len(non_zero_indices) > 0:
-            max_x = non_zero_indices[-1]
-            ax.set_xlim(0, max_x + 50)
+            max_idx = non_zero_indices[-1]
+            max_x = x_axis[max_idx]
+            pad = (x_axis[min(max_idx + 50, L - 1)] - max_x) if calib_params is not None else 50
+            ax.set_xlim(max(0, x_axis[0]), max_x + pad)
         else:
-            ax.set_xlim(0, len(sig_np))
-
+            ax.set_xlim(max(0, x_axis[0]), x_axis[-1])
 
     if max_val is not None:
         ax.set_yscale('log')
 
     ax.set_title(
-        f"Diffusion Generation Progress [{label.upper()}] | Loop Index: {loop_idx}\nNoise Scale: {noise_scale_val:.6f}")
-    ax.set_xlabel("Channel")
+        f"Diffusion Generation Progress [{label.upper()}]{title_ext} | Loop Index: {loop_idx}\nNoise Scale: {noise_scale_val:.6f}"
+    )
+    ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     ax.grid(True, which="both", ls="--", alpha=0.5)
     plt.tight_layout()
 
     plt.savefig(os.path.join(track_path, f"{label}_plot.png"), dpi=300)
     plt.close(fig)
-
 
 if __name__ == '__main__':
     print("Running standalone noise schedule comparison...")
