@@ -1,8 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 from math import sqrt
+
+from models.film import FiLMGenerator
 
 Linear = nn.Linear
 
@@ -52,17 +53,19 @@ class DiffusionEmbedding(nn.Module):
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, residual_channels, dilation):
+    def __init__(self, residual_channels, dilation, film_location='before_output_proj'):
         '''
     :param residual_channels: signal conv channels
     :param dilation: signal conv dilation
     '''
         super().__init__()
+        self.film_location = film_location
         self.dilated_conv = Conv1d(residual_channels, 2 * residual_channels, 3, padding=dilation, dilation=dilation)
         self.diffusion_projection = Linear(512, residual_channels)
         self.output_projection = Conv1d(residual_channels, 2 * residual_channels, 1)
 
-    def forward(self, x, diffusion_step):
+
+    def forward(self, x, diffusion_step, gamma=None, beta=None):
         diffusion_step = self.diffusion_projection(diffusion_step).unsqueeze(-1)
         y = x + diffusion_step
 
@@ -72,7 +75,16 @@ class ResidualBlock(nn.Module):
         gate, filter = torch.chunk(y, 2, dim=1)
         y = torch.sigmoid(gate) * torch.tanh(filter) # [B,C,L]
 
+        # Apply FiLM before Output Projection (Channels = C)
+        if self.film_location == 'before_output_proj' and gamma is not None and beta is not None:
+            y = (1.0 + gamma.unsqueeze(-1)) * y + beta.unsqueeze(-1)
+
         y = self.output_projection(y) # [B,2C,L]
+
+        # Apply FiLM after Output Projection (Channels = 2C)
+        if self.film_location == 'after_output_proj' and gamma is not None and beta is not None:
+            y = (1.0 + gamma.unsqueeze(-1)) * y + beta.unsqueeze(-1)
+
         residual, skip = torch.chunk(y, 2, dim=1) # residual [B,C,L], skip [B,C,L]
         return (x + residual) / sqrt(2.0), skip
 
@@ -82,29 +94,57 @@ class DiffWave(nn.Module):
         super().__init__()
         self.config = config
         mod_cfg = config['model']  # Access the model block
+        calib_cfg = config.get('calibration', {})
+
+        self.use_film = calib_cfg.get('enabled', False)
+        self.num_calib_params = calib_cfg.get('num_params', 4)
+        self.film_location = calib_cfg.get('film_location', 'before_output_proj')
 
         self.input_projection = Conv1d(1, mod_cfg['residual_channels'], 1)
         self.diffusion_embedding = DiffusionEmbedding(mod_cfg['T'])
 
+        # FiLM channels per layer depend on insertion point
+        film_channels = mod_cfg['residual_channels'] if self.film_location == 'before_output_proj' else 2 * mod_cfg['residual_channels']
+
+        if self.use_film:
+            self.film_generator = FiLMGenerator(
+                num_params=self.num_calib_params,
+                num_layers=mod_cfg['residual_layers'],
+                channels_per_layer=film_channels
+            )
+        else:
+            self.film_generator = None
+
         self.residual_layers = nn.ModuleList([
-            ResidualBlock(mod_cfg['residual_channels'], 2 ** (i % mod_cfg['dilation_cycle_length']))
+            ResidualBlock(residual_channels=mod_cfg['residual_channels'],
+                          dilation=2 ** (i % mod_cfg['dilation_cycle_length']),
+                          film_location=self.film_location
+                          )
             for i in range(mod_cfg['residual_layers'])
         ])
         self.skip_projection = Conv1d(mod_cfg['residual_channels'], mod_cfg['residual_channels'], 1)
         self.output_projection = Conv1d(mod_cfg['residual_channels'], 1, 1)
         nn.init.zeros_(self.output_projection.weight)
 
-    def forward(self, signal, diffusion_step, _conditioner=None):
-        # _conditioner is kept as a dummy variable since inference.py and learner.py pass `None`
+    def forward(self, signal, diffusion_step, conditioner=None):
         x = signal.unsqueeze(1)
         x = self.input_projection(x)
         x = F.relu(x)
 
         diffusion_step = self.diffusion_embedding(diffusion_step)
 
+        # Generate all layer modulation globally
+        if self.use_film and conditioner is not None:
+            gammas, betas = self.film_generator(conditioner) # Shapes: [B,N,C]
+        else:
+            gammas,betas = None, None
+
         skip = None
-        for layer in self.residual_layers:
-            x, skip_connection = layer(x, diffusion_step) # [B,C,L] for each of them
+        for i, layer in enumerate(self.residual_layers):
+            g_i = gammas[:, i, :] if gammas is not None else None # [B,C]
+            b_i = betas[:, i, :] if betas is not None else None #[B,C]
+
+            x, skip_connection = layer(x, diffusion_step, gamma=g_i, beta=b_i) # [B,C,L] for each of them
             skip = skip_connection if skip is None else skip_connection + skip
 
         x = skip / sqrt(len(self.residual_layers)) # [B,C,L]
