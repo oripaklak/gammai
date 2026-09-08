@@ -212,7 +212,7 @@ class DiffWaveLearner:
                 # Track signals only on the first batch
                 current_track_dir = self.track_dir_eval if generated_so_far == 0 else None
 
-                fake_signal = run_reverse_diffusion_loop(
+                fake_signal, _ = run_reverse_diffusion_loop(
                     model=model_to_eval,
                     config=self.config,
                     num_samples=current_batch_size,
@@ -368,7 +368,7 @@ class DiffWaveLearner:
         for param in self.model.parameters():
             param.grad = None
 
-        full_signal = features['signal']  # Shape: (B, L + 4) when is_calib is True
+        full_signal = features['signal']  # Shape: (B, L + 4) if calibration method is concat
         B, full_len = full_signal.shape
         device = full_signal.device
         self.noise_level = self.noise_level.to(device)
@@ -385,24 +385,24 @@ class DiffWaveLearner:
             noise_scale = self.noise_level[t].unsqueeze(1)
             noise_scale_sqrt = noise_scale ** 0.5
 
-            # 1. Noise is added to the ENTIRE sequence (B, L + 4)
+            # 1. Noise is added to the ENTIRE sequence (B, L) or (B, L+4)
             noise = torch.randn_like(full_signal)
             noisy_signal = noise_scale_sqrt * full_signal + (1.0 - noise_scale) ** 0.5 * noise
 
             # 2. Plotting metadata extraction (Master process only)
             if self.is_master:
                 first_sample_t = t[0].item()
-                clean_sig_plot = full_signal[0:1, :-4] if is_calib else full_signal[0:1]
-                noisy_sig_plot = noisy_signal[0:1, :-4] if is_calib else noisy_signal[0:1]
-                noise_sig_plot = noise[0:1, :-4] if is_calib else noise[0:1]
-                calib_params_plot = full_signal[0:1, -4:] if is_calib else None
+                clean_sig_plot = full_signal[0:1, :-4] if (is_calib and cond_method == 'concat') else full_signal[0:1]
+                noisy_sig_plot = noisy_signal[0:1, :-4] if (is_calib and cond_method == 'concat') else noisy_signal[0:1]
+                noise_sig_plot = noise[0:1, :-4] if (is_calib and cond_method == 'concat') else noise[0:1]
+                calib_params_plot = full_signal[0:1, -4:] if (is_calib and cond_method == 'concat') else None
 
                 self.track_forward_process(
                     clean_sig_plot, noisy_sig_plot, noise_sig_plot, first_sample_t, self.step,
                     calib_params=calib_params_plot
                 )
 
-            # 3. Predict noise for all L + 4 channels
+            # 3. Predict noise for all channels
             predicted = self.model(noisy_signal, t, conditioner=conditioner)
             loss = self.loss_fn(noise, predicted.squeeze(1))
 
@@ -564,9 +564,9 @@ def main():
     num_calib_params = calib_cfg.get('num_params', 4)
     conditioning_method = calib_cfg.get('conditioning_method', 'concat')
 
-    if is_calib:
+    if is_calib and conditioning_method == 'concat':
         config['model']['signal_len'] += num_calib_params
-        print(f"Calibration enabled: Adjusted model signal_len to {config['model']['signal_len']}")
+        print(f"Calibration Concat enabled: Adjusted model signal_len to {config['model']['signal_len']}")
 
     set_seed(train_cfg["seed"])
 
