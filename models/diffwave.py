@@ -38,11 +38,12 @@ class DiffusionEmbedding(nn.Module):
         return x
 
     def _lerp_embedding(self, t):
-        low_idx = torch.floor(t).long()
+        low_idx = torch.floor(t).long() # [B]
         high_idx = torch.ceil(t).long()
-        low = self.embedding[low_idx]
-        high = self.embedding[high_idx]
-        return low + (high - low) * (t - low_idx)
+        low = self.embedding[low_idx]   # [B,128]
+        high = self.embedding[high_idx] # [B,128]
+        scale = (t - low_idx).unsqueeze(-1) # [B,1]
+        return low + (high - low) * scale
 
     def _build_embedding(self, max_steps):
         steps = torch.arange(max_steps).unsqueeze(1)  # [T,1]
