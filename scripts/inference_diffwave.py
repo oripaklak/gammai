@@ -11,13 +11,20 @@ from tqdm import tqdm
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils.helpers import (load_config, setup_device, plot_and_save_spectra,
-                           unnormalize, unnormalize_coeffs,
+                           unnormalize, unnormalize_coeffs, normalize_coeffs,
                            get_noise_schedule, plot_diffusion_step)
 from models.diffwave import DiffWave
 
 
 def run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=None, global_step=None, max_val=None,
                                conditioner=None):
+    """
+    Reverse diffusion engine supporting both 'concat' and 'film' calibration modes.
+    Returns:
+        tuple: (signal, returned_conditioner)
+            - concat mode: signal shape (B, L+4), returned_conditioner shape (B, 4)
+            - film mode:   signal shape (B, L),   returned_conditioner shape (B, 4)
+    """
     gen_cfg = config['generation']
     mod_cfg = config['model']
     calib_cfg = config.get('calibration', {})
@@ -25,15 +32,28 @@ def run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=Non
     is_calib = calib_cfg.get('enabled', False)
     cond_method = calib_cfg.get('conditioning_method', 'concat')
     fast_sampling = gen_cfg.get('fast_sampling', True)
-    signal_len = mod_cfg['signal_len']
-
-    # FIX: Determine length based on method
-    full_len = signal_len + calib_cfg.get('num_params', 4) if (is_calib and cond_method == 'concat') else signal_len
+    full_len = mod_cfg['signal_len']  # L+4 for concat (already incremented in main), L for film
     num_tracking_steps = gen_cfg.get('num_tracking_steps', 0)
 
-    # If FiLM is active and no conditioner was provided, sample standard normal noise as condition
+    # If FiLM is active and no custom conditioner was provided, sample real calibration
+    # vectors randomly from the dataset coeff matrix and normalize them.
     if is_calib and cond_method == 'film' and conditioner is None:
-        conditioner = torch.randn(num_samples, calib_cfg.get('num_params', 4), device=device)
+        base_dir = config['paths']['base_dir']
+        dataset_name = config['paths']['dataset_name']
+        coeff_path = f"{base_dir}/coeff_matrix_{dataset_name}.npy"
+
+        if not os.path.exists(coeff_path):
+            raise FileNotFoundError(f"FiLM calibration enabled but missing coeff matrix at: {coeff_path}")
+
+        raw_coeffs = np.load(coeff_path).astype(np.float32)
+
+        # Sample num_samples random indices from real dataset coefficients
+        indices = np.random.choice(len(raw_coeffs), size=num_samples, replace=(num_samples > len(raw_coeffs)))
+        sampled_raw = raw_coeffs[indices]
+
+        # Normalize sampled coefficients using standard dataset scaling
+        norm_coeffs = normalize_coeffs(sampled_raw)
+        conditioner = torch.from_numpy(norm_coeffs).float().to(device)
 
     with torch.no_grad():
         training_noise_schedule, talpha_cum = get_noise_schedule(mod_cfg)
@@ -65,6 +85,7 @@ def run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=Non
 
         T_steps = np.array(T_steps, dtype=np.float32)
 
+        # Initialize x_T Gaussian noise (Length L+4 for Concat, L for FiLM)
         signal = torch.randn(num_samples, full_len, device=device)
         noise_scale = torch.from_numpy(alpha_cum ** 0.5).float().to(device)
 
@@ -72,20 +93,22 @@ def run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=Non
             last_10_steps = list(range(10))
             extra_5_steps = [199, 150, 100, 50, 20]
             track_indices = set(last_10_steps + extra_5_steps)
-            current_track_path = track_dir if global_step == "inference" else os.path.join(track_dir,
-                                                                                           f"step_{global_step}")
+            current_track_path = track_dir if global_step == "inference" else os.path.join(
+                track_dir, f"step_{global_step}"
+            )
             os.makedirs(current_track_path, exist_ok=True)
         else:
             track_indices = set()
 
+        # Reverse diffusion loop
         for n in tqdm(range(len(alpha) - 1, -1, -1), desc="Denoising Progress"):
-            # FIX: Determine current conditioner for step
             step_conditioner = signal[:, -4:] if (is_calib and cond_method == 'concat') else conditioner
 
             if n == len(alpha) - 1 and n in track_indices:
                 signal_part = signal[0, :-4] if (is_calib and cond_method == 'concat') else signal[0]
                 calib_part = signal[0, -4:] if (is_calib and cond_method == 'concat') else (
-                    step_conditioner[0] if step_conditioner is not None else None)
+                    step_conditioner[0] if step_conditioner is not None else None
+                )
                 plot_diffusion_step(current_track_path, signal_part, noise_scale[n].item(), n, "T", max_val,
                                     calib_params=calib_part)
 
@@ -105,19 +128,26 @@ def run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=Non
                 label = f"{n}"
                 signal_part = signal[0, :-4] if (is_calib and cond_method == 'concat') else signal[0]
                 calib_part = signal[0, -4:] if (is_calib and cond_method == 'concat') else (
-                    step_conditioner[0] if step_conditioner is not None else None)
+                    step_conditioner[0] if step_conditioner is not None else None
+                )
                 plot_diffusion_step(current_track_path, signal_part, noise_scale[n].item(), n, label, max_val,
                                     calib_params=calib_part)
 
         signal = torch.clamp(signal, 0.0, 1.0)
 
-    return signal, conditioner
+    # Determine returned conditioner vector for downstream un-normalization
+    if is_calib:
+        if cond_method == 'concat':
+            returned_conditioner = signal[:, -calib_cfg.get('num_params', 4):]
+        else:  # film
+            returned_conditioner = conditioner
+    else:
+        returned_conditioner = None
 
-def load_model_and_generate(config, device=torch.device('cuda'), track_dir=None, max_val=None):
-    """
-    Initializes the PyTorch model architecture, loads the saved `.pt` weights from disk,
-    sets the model to evaluation mode, and hands it off to the generation engine.
-    """
+    return signal, returned_conditioner
+
+def load_model_and_generate(config, device=torch.device('cuda'), track_dir=None, max_val=None, conditioner=None):
+    """Initializes model, loads checkpoint weights, and triggers reverse diffusion."""
     weights_path = config['generation']['model_path']
     num_samples = config['generation']['num_samples_to_generate']
 
@@ -129,12 +159,24 @@ def load_model_and_generate(config, device=torch.device('cuda'), track_dir=None,
     model.load_state_dict(checkpoint['model'])
     model.eval()
 
-    return run_reverse_diffusion_loop(model, config, num_samples, device, track_dir=track_dir, global_step="inference", max_val=max_val)
+    return run_reverse_diffusion_loop(
+        model, config, num_samples, device, track_dir=track_dir, global_step="inference", max_val=max_val,
+        conditioner=conditioner
+    )
 
-
-def execute_inference_pipeline(config, device, scaling_path, weights_path, is_calib, num_calib_params):
+def execute_inference_pipeline(config, device, scaling_path, weights_path, is_calib, num_calib_params, cond_method,
+                               target_conditioner=None):
+    """Handles IO, execution, slicing, and un-normalization of generated samples."""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     model_name = os.path.splitext(os.path.basename(weights_path))[0]
+
+    gen_cfg = config['generation']
+    fast_sampling = gen_cfg.get('fast_sampling', True)
+
+    if fast_sampling:
+        inference_schedule = config['model'].get('inference_noise_schedule', [])
+        num_fast_steps = len(inference_schedule)
+        model_name = f"{model_name}_T={num_fast_steps}"
 
     run_name = os.path.basename(os.path.dirname(weights_path))
     save_dir = f"results/{run_name}/{model_name}_{timestamp}"
@@ -145,19 +187,33 @@ def execute_inference_pipeline(config, device, scaling_path, weights_path, is_ca
 
     max_val = np.load(scaling_path)
 
-    # Generate full tensor of shape (num_samples, L + 4)
-    signal, _ = load_model_and_generate(config=config, device=device, track_dir=track_dir, max_val=max_val)
+    # Run reverse diffusion loop (returns 2 variables)
+    signal, returned_conditioner = load_model_and_generate(
+        config=config, device=device, track_dir=track_dir, max_val=max_val, conditioner=target_conditioner
+    )
+
     generated_scaled = signal.cpu().numpy()
 
-    # --- Slice and Un-normalize ---
+    # --- Slicing and Un-normalizing Logic ---
     if is_calib:
-        gen_spectrum_norm = generated_scaled[:, :-num_calib_params]  # First L elements
-        gen_coeffs_norm = generated_scaled[:, -num_calib_params:]    # Last 4 elements
+        if cond_method == 'concat':
+            gen_spectrum_norm = generated_scaled[:, :-num_calib_params]
+            gen_coeffs_norm = generated_scaled[:, -num_calib_params:]
 
-        # Unnormalize spectrum and coefficients with their respective scaling logic
-        generated_counts = unnormalize(gen_spectrum_norm, max_val)
-        generated_counts = np.clip(np.round(generated_counts), a_min=0, a_max=None)
-        gen_coeffs = unnormalize_coeffs(gen_coeffs_norm)
+            generated_counts = unnormalize(gen_spectrum_norm, max_val)
+            generated_counts = np.clip(np.round(generated_counts), a_min=0, a_max=None)
+            gen_coeffs = unnormalize_coeffs(gen_coeffs_norm)
+
+        elif cond_method == 'film':
+            gen_spectrum_norm = generated_scaled  # Signal is purely L length
+            generated_counts = unnormalize(gen_spectrum_norm, max_val)
+            generated_counts = np.clip(np.round(generated_counts), a_min=0, a_max=None)
+
+            if returned_conditioner is not None:
+                gen_coeffs_norm = returned_conditioner.cpu().numpy()
+                gen_coeffs = unnormalize_coeffs(gen_coeffs_norm)
+            else:
+                gen_coeffs = None
     else:
         generated_counts = unnormalize(generated_scaled, max_val)
         generated_counts = np.clip(np.round(generated_counts), a_min=0, a_max=None)
@@ -171,9 +227,9 @@ def main(args):
     calib_cfg = config.get('calibration', {})
     is_calib = calib_cfg.get('enabled', False)
     num_calib_params = calib_cfg.get('num_params', 4)
-    conditioning_method = calib_cfg.get('conditioning_method', 'concat')
+    cond_method = calib_cfg.get('conditioning_method', 'concat')
 
-    if is_calib:
+    if is_calib and cond_method == 'concat':
         config['model']['signal_len'] += num_calib_params
 
     device = setup_device(config['hardware'], mode="inference")
@@ -183,17 +239,16 @@ def main(args):
     base_dir = config["paths"]["base_dir"]
     dataset_name = config["paths"]["dataset_name"]
     scaling_path = f"{base_dir}/scaling_factor_{dataset_name}.npy"
-
+    coeff_path = f"{base_dir}/coeff_matrix_{dataset_name}.npy"
     print(f"Generating {num_samples} samples from {weights_path}...")
 
     generated_counts, gen_coeffs, save_dir, model_name = execute_inference_pipeline(
-        config, device, scaling_path, weights_path, is_calib, num_calib_params
-    )
+        config, device, scaling_path, weights_path, is_calib, cond_method, num_calib_params)
 
-    if gen_coeffs is not None:
+    if is_calib and cond_method == 'concat':
         plot_and_save_spectra(generated_counts, save_dir, model_name, gen_coeffs)
-        coeff_path = os.path.join(save_dir, f"all_{num_samples}_coeffs.npy")
-        np.save(coeff_path, gen_coeffs)
+        gen_coeff_path = os.path.join(save_dir, f"all_{num_samples}_coeffs.npy")
+        np.save(coeff_path, gen_coeff_path)
     else:
         plot_and_save_spectra(generated_counts, save_dir, model_name)
 
