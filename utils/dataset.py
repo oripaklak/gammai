@@ -33,13 +33,14 @@ class SignalDataset(torch.utils.data.Dataset):
 
         if self.is_calib:
             coeff = self.coeffs[idx]  # Shape: (4,)
-            # ALWAYS concatenate to create an (L + 4,) sequence
-            signal = np.concatenate([signal, coeff], axis=0)
-
-            item = {'signal': signal}
-            if self.cond_method == 'film':
-                item['conditioner'] = coeff  # Separate tensor for FiLM layer modulation
-            return item
+            if self.cond_method == 'concat':
+                signal = np.concatenate([signal, coeff], axis=0)  # Shape: (L+4,)
+                return {'signal': signal}
+            else:
+                return {
+                    'signal': signal,  # Shape: (L,)
+                    'conditioner': coeff  # Shape: (4,)
+                }
 
         return {'signal': signal}
 
