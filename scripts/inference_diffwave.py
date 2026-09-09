@@ -243,9 +243,10 @@ def main(args):
     print(f"Generating {num_samples} samples from {weights_path}...")
 
     generated_counts, gen_coeffs, save_dir, model_name = execute_inference_pipeline(
-        config, device, scaling_path, weights_path, is_calib, cond_method, num_calib_params)
+        config, device, scaling_path, weights_path, is_calib, num_calib_params, cond_method
+    )
 
-    if is_calib and cond_method == 'concat':
+    if is_calib:
         plot_and_save_spectra(generated_counts, save_dir, model_name, gen_coeffs)
         gen_coeff_path = os.path.join(save_dir, f"all_{num_samples}_coeffs.npy")
         np.save(coeff_path, gen_coeff_path)
