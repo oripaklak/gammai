@@ -239,23 +239,25 @@ def main(args):
     base_dir = config["paths"]["base_dir"]
     dataset_name = config["paths"]["dataset_name"]
     scaling_path = f"{base_dir}/scaling_factor_{dataset_name}.npy"
-    coeff_path = f"{base_dir}/coeff_matrix_{dataset_name}.npy"
+
     print(f"Generating {num_samples} samples from {weights_path}...")
 
     generated_counts, gen_coeffs, save_dir, model_name = execute_inference_pipeline(
         config, device, scaling_path, weights_path, is_calib, num_calib_params, cond_method
     )
 
-    if is_calib:
+    if is_calib and gen_coeffs is not None:
         plot_and_save_spectra(generated_counts, save_dir, model_name, gen_coeffs)
         gen_coeff_path = os.path.join(save_dir, f"all_{num_samples}_coeffs.npy")
-        np.save(coeff_path, gen_coeff_path)
+
+        # FIX: Save the generated coefficients array (gen_coeffs) into the results folder (gen_coeff_path)
+        np.save(gen_coeff_path, gen_coeffs)
     else:
         plot_and_save_spectra(generated_counts, save_dir, model_name)
 
     data_path = os.path.join(save_dir, f"all_{num_samples}_samples.npy")
     np.save(data_path, generated_counts)
-    print(f"Successfully saved all {num_samples} images and data to: {save_dir}/")
+    print(f"Successfully saved all {num_samples} samples to: {save_dir}/")
 
 
 if __name__ == '__main__':
