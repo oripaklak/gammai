@@ -293,6 +293,7 @@ def plot_and_save_spectra(generated_counts, save_dir, model_name, gen_coeffs=Non
         plt.savefig(plot_path, dpi=300)
         plt.close()
 
+
 def plot_diffusion_step(track_path, single_signal, noise_scale_val, loop_idx, label, max_val=None, calib_params=None):
     """
     Saves a PNG graph of a single spectrum at a specific step in the diffusion loop.
@@ -309,8 +310,11 @@ def plot_diffusion_step(track_path, single_signal, noise_scale_val, loop_idx, la
         sig_np = unnormalize(sig_np, max_val)
         sig_np = np.clip(np.round(sig_np), a_min=0, a_max=None)
         y_label = "Counts (Log Scale)"
+        # Floor values at 1e-1 to prevent log(0) crash during plotting
+        sig_plot = np.maximum(sig_np, 1e-1)
     else:
         y_label = "Amplitude (Normalized)"
+        sig_plot = sig_np
 
     # --- Calibration X-Axis Handling ---
     if calib_params is not None:
@@ -334,10 +338,10 @@ def plot_diffusion_step(track_path, single_signal, noise_scale_val, loop_idx, la
         title_ext = ""
 
     fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(x_axis, sig_np, color='blue', linewidth=1)
+    ax.plot(x_axis, sig_plot, color='blue', linewidth=1)
 
     # Dynamic cropping for the final step (label == "0")
-    if label == "0":
+    if str(label) == "0":
         non_zero_indices = np.nonzero(sig_np)[0]
         if len(non_zero_indices) > 0:
             max_idx = non_zero_indices[-1]
@@ -349,9 +353,10 @@ def plot_diffusion_step(track_path, single_signal, noise_scale_val, loop_idx, la
 
     if max_val is not None:
         ax.set_yscale('log')
+        ax.set_ylim(bottom=1e-1)
 
     ax.set_title(
-        f"Diffusion Generation Progress [{label.upper()}]{title_ext} | Loop Index: {loop_idx}\nNoise Scale: {noise_scale_val:.6f}"
+        f"Diffusion Generation Progress [{str(label).upper()}]{title_ext} | Loop Index: {loop_idx}\nNoise Scale: {noise_scale_val:.6f}"
     )
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
