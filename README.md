@@ -119,15 +119,34 @@ python scripts/inference_diffwave.py --exp configs/experiments/diffwave_base.yam
 
 ## Data Retrieval & Memorization Check
 
-To verify the model generates novel data rather than memorizing the training set, this script calculates the Euclidean distance between your generated spectra and the original `.txt` training samples to find the nearest real neighbor.
+To verify the model generates novel data rather than memorizing the training set, `scripts/retrieval.py` calculates distance metrics between generated spectra and original `.txt` training samples to find the nearest real neighbor. It supports both standard Euclidean distance and structural 1D SIFT (Bag-of-Words with Chi-Square distance).
 
-**Run the analysis:**
-Point `--results_dir` to the folder containing your generated `all_N_samples.npy` file:
+**Run Retrieval Analysis (Euclidean Metric):**
 
 ```bash
-python scripts/find_closest_spectra.py \
+python scripts/retrieval.py \
   --results_dir results/YOUR_RUN_NAME/YOUR_TIMESTAMP_FOLDER \
+  --metric euclidean \
   --calib_weight 5000
-  ```
 
-> **Note:** You can modify the script directly to change which `.txt` training data files are used for the comparison.
+```
+
+**Run Retrieval Analysis (1D SIFT Metric):**
+
+```bash
+python scripts/retrieval.py \
+  --results_dir results/YOUR_RUN_NAME/YOUR_TIMESTAMP_FOLDER \
+  --metric sift \
+  --n_clusters 64 \
+  --calib_weight 5000
+
+```
+
+> **Note:** When using `--metric sift`, trained codebooks are cached automatically in `data/codebooks/` based on your experiment's dataset name (e.g., `sift_codebook_<dataset_name>_k64.pkl`) to avoid redundant training on subsequent runs.
+
+**Key Arguments:**
+
+* `--results_dir`: Path to the inference output directory containing `all_*_samples.npy`.
+* `--metric`: Distance metric to use (`euclidean` or `sift`). Default is `euclidean`.
+* `--n_clusters`: Number of visual words for the SIFT codebook (used only with `--metric sift`). Default is `64`.
+* `--calib_weight`: Relative weight of calibration coefficient distance compared to shape distance. Default is `0`.
