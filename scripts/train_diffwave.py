@@ -18,10 +18,9 @@ import yaml
 # Add project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# Import NDA mutation directly from create_nda.py
-from utils.create_nda import apply_nda_mutations
 from inference_diffwave import run_reverse_diffusion_loop
 from models.diffwave import DiffWave
+from utils.create_nda import apply_nda_mutations
 from utils.dataset import from_path
 from utils.helpers import (
     count_parameters,
@@ -38,11 +37,11 @@ from utils.metrics import calculate_f_mem, calculate_fid, calculate_kid
 
 
 # ==============================================================================
-# NDA Batch Helper (Applies create_nda.py mutations)
+# NDA Batch Helper (Applies utils/create_nda.py mutations)
 # ==============================================================================
 def apply_nda_batch(x_0_tensor, energy_max=3000.0):
     """
-    Applies the exact apply_nda_mutations function from create_nda.py
+    Applies the exact apply_nda_mutations function from utils/create_nda.py
     to each sample in the PyTorch batch.
     """
     device = x_0_tensor.device
@@ -51,7 +50,6 @@ def apply_nda_batch(x_0_tensor, energy_max=3000.0):
 
     y_ood_list = []
     for i in range(B):
-        # Apply delta spikes, Compton gaps, or slope reversals from create_nda.py
         mutated_y, _, _ = apply_nda_mutations(x_0_np[i], energy_max=energy_max)
         y_ood_list.append(mutated_y)
 
@@ -223,6 +221,105 @@ class DiffWaveLearner:
             raise
 
     # ==============================================================================
+    # Evaluation Routine
+    # ==============================================================================
+    def evaluate(self):
+        """Generates fast samples and calculates FID/KID metrics using optimized batch sizes."""
+        num_samples_to_generate = 256
+
+        # --- 0. Isolate RNG State ---
+        torch_rng_state = torch.get_rng_state()
+        cuda_rng_state = torch.cuda.get_rng_state()
+
+        eval_batch_size = 64
+
+        print(
+            f"\nGenerating {num_samples_to_generate} samples for evaluation (Eval Batch Size: {eval_batch_size})..."
+        )
+
+        model_to_eval = (
+            self.model.module
+            if hasattr(self.model, "module")
+            else self.model
+        )
+        model_to_eval.eval()
+
+        # --- 1. Collect Real Samples ---
+        all_real_data = []
+        real_collected = 0
+
+        for eval_batch in self.dataset:
+            real_batch = eval_batch["signal"]
+            all_real_data.append(real_batch.cpu().numpy())
+            real_collected += real_batch.size(0)
+
+            if real_collected >= num_samples_to_generate:
+                break
+
+        real_np = np.concatenate(all_real_data, axis=0)[
+            :num_samples_to_generate
+        ]
+
+        # --- 2. Generate Fake Samples ---
+        all_fake_data = []
+        generated_so_far = 0
+
+        with torch.no_grad():
+            while generated_so_far < num_samples_to_generate:
+                current_batch_size = min(
+                    eval_batch_size, num_samples_to_generate - generated_so_far
+                )
+                current_track_dir = (
+                    self.track_dir_eval if generated_so_far == 0 else None
+                )
+
+                fake_signal, _ = run_reverse_diffusion_loop(
+                    model=model_to_eval,
+                    config=self.config,
+                    num_samples=current_batch_size,
+                    device=self.device,
+                    track_dir=current_track_dir,
+                    global_step=self.step,
+                    max_val=self.max_val,
+                )
+
+                all_fake_data.append(fake_signal.cpu().numpy())
+                generated_so_far += current_batch_size
+
+        fake_np = np.concatenate(all_fake_data, axis=0)
+
+        # --- 3. Calculate Metrics ---
+        try:
+            fd_score = calculate_fid(real_np, fake_np)
+            kid_score = calculate_kid(real_np, fake_np)
+            f_mem_percentage = calculate_f_mem(
+                fake_np, real_np, k=self.f_mem_threshold
+            )
+            if self.track_cfg["enabled"]:
+                import wandb
+
+                wandb.log(
+                    {
+                        "eval/FID": fd_score,
+                        "eval/KID": kid_score,
+                        "eval/f_mem": f_mem_percentage,
+                    },
+                    step=self.step,
+                )
+
+            print(
+                f"--> Eval Step {self.step} | FD: {fd_score:.4f} | KD: {kid_score:.4f} | F_Mem: {f_mem_percentage:.1f}"
+            )
+        except Exception as e:
+            print(
+                f"\nWarning: Failed to calculate evaluation metrics. Error: {e}"
+            )
+
+        # --- 4. Restore RNG State ---
+        torch.set_rng_state(torch_rng_state)
+        torch.cuda.set_rng_state(cuda_rng_state)
+
+    # ==============================================================================
     # Tracking x_0_hat Reconstruction Plot
     # ==============================================================================
     def track_reconstruction(
@@ -354,7 +451,7 @@ class DiffWaveLearner:
             # 3. Compute Standard Diffusion Loss
             loss_diffwave = self.loss_fn(noise, pred_noise)
 
-            # 4. Compute OOD/NDA Regularization Loss using create_nda.py
+            # 4. Compute OOD/NDA Regularization Loss using utils/create_nda.py
             if self.use_nda:
                 y_ood = apply_nda_batch(spec_clean, energy_max=3000.0)
                 ood_dist = torch.mean((spec_x0_hat - y_ood) ** 2, dim=-1)
@@ -439,12 +536,18 @@ class DiffWaveLearner:
                         if self.step >= wandb_catchup_step:
                             self._write_summary(self.step, features, loss)
 
+                # --- Checkpoint & Evaluation Trigger ---
                 if (
                     self.step > 0
                     and self.step % self.train_cfg["checkpoint_freq"] == 0
                 ):
                     if self.is_master:
                         self.save_to_checkpoint()
+
+                        if self.step >= wandb_catchup_step:
+                            self.model.eval()
+                            self.evaluate()
+                            self.model.train()
 
                 if torch.distributed.is_initialized():
                     dist.barrier()
