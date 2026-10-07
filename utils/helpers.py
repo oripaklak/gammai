@@ -1,10 +1,10 @@
 import csv
+import datetime
 import json
 import os
 import random
 import signal
 import sys
-import datetime
 from scipy.signal import find_peaks, savgol_filter
 import matplotlib.pyplot as plt
 import numpy as np
@@ -106,6 +106,7 @@ def generate_run_name(config, total_params):
     calib_cfg = config.get("calibration", {})
     calib = calib_cfg.get("enabled", False)
     cond_method = calib_cfg.get("conditioning_method", "concat")
+    film_location = calib_cfg.get("film_location", "after_output_proj")
 
     # Dynamically extract dataset name
     path_cfg = config.get("paths", {})
@@ -127,8 +128,10 @@ def generate_run_name(config, total_params):
     if not calib:
         run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{batch_size}_{schedule_type}-{end_str}_ep{epochs}_{dataset_name}"
     else:
-        run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{batch_size}_{schedule_type}-{end_str}_ep{epochs}_calib_{cond_method}_{dataset_name}"
-
+        if cond_method == "concat":
+            run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{batch_size}_{schedule_type}-{end_str}_ep{epochs}_calib_{cond_method}_{dataset_name}"
+        else: # cond_method == "film"
+            run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{batch_size}_{schedule_type}-{end_str}_ep{epochs}_calib_{cond_method}_{film_location}_{dataset_name}"
     return run_name
 
 
@@ -267,6 +270,22 @@ def unnormalize_coeffs(norm_coeffs, bounds_path=None):
     return raw_coeffs
 
 
+def compute_safe_energies(coeffs, num_channels):
+    """Evaluates polynomial calibration coefficients while enforcing:
+    1. Strictly non-negative energy values (E >= 0.0).
+    2. Monotonic non-decreasing progression across channels.
+    """
+    channels = np.arange(num_channels)
+    if coeffs is not None and len(coeffs) == 4:
+        energies = np.polyval(coeffs[::-1], channels)
+    else:
+        energies = channels.astype(np.float32)
+
+    energies = np.maximum(energies, 0.0)
+    energies = np.maximum.accumulate(energies)
+    return energies
+
+
 def plot_and_save_spectra(
     generated_counts,
     save_dir,
@@ -276,8 +295,7 @@ def plot_and_save_spectra(
     min_prominence=25.0,
     bounds_path=None,
 ):
-    """Plots spectra with arrow tip clearance and vertical text
-    annotations."""
+    """Plots final generated spectra in Energy (keV) space."""
     os.makedirs(save_dir, exist_ok=True)
     num_samples = len(generated_counts)
 
@@ -287,18 +305,19 @@ def plot_and_save_spectra(
 
         L = len(spectrum)
         channels = np.arange(L)
-        if coeffs is not None:
-            try:
-                c_unnorm = unnormalize_coeffs(coeffs, bounds_path=bounds_path)
-            except Exception:
-                c_unnorm = coeffs
-            x_axis = np.maximum(np.polyval(c_unnorm[::-1], channels), 0.0)
+
+        fig, ax = plt.subplots(figsize=(12, 4.5))
+
+        if coeffs is not None and len(coeffs) == 4:
+            x_axis = compute_safe_energies(coeffs, L)
             x_label = "Energy (keV)"
+            max_e = np.max(x_axis) if len(x_axis) > 0 else 3000.0
+            xlim_right = float(np.clip(max_e, 30.0, 3000.0))
+            ax.set_xlim(0.0, xlim_right)
         else:
             x_axis = channels
             x_label = "Channel"
-
-        fig, ax = plt.subplots(figsize=(12, 4.5))
+            ax.set_xlim(0, L)
 
         sig_plot = np.maximum(spectrum, 1e-1)
         ax.plot(
@@ -308,15 +327,6 @@ def plot_and_save_spectra(
             linewidth=1,
             label="Generated Spectrum",
         )
-
-        non_zero_indices = np.nonzero(spectrum)[0]
-        if len(non_zero_indices) > 0:
-            max_idx = non_zero_indices[-1]
-            pad_idx = min(max_idx + 100, L - 1)
-            max_x = x_axis[pad_idx]
-            ax.set_xlim(max(0, x_axis[0]), max_x)
-        else:
-            ax.set_xlim(max(0, x_axis[0]), x_axis[-1])
 
         energies, counts = [], []
         if detect_peaks:
@@ -336,6 +346,8 @@ def plot_and_save_spectra(
             counts = counts[sorted_order]
 
             for idx, (p_x, p_y) in enumerate(zip(energies, counts)):
+                if coeffs is not None and (p_x < 0.0 or p_x > 3000.0):
+                    continue
                 y_val = max(p_y, 1e-1)
                 stagger_level = idx % 3
                 y_text_mult = 2.2 * (2.2**stagger_level)
@@ -374,7 +386,6 @@ def plot_and_save_spectra(
         plt.savefig(os.path.join(save_dir, f"spectrum_{i+1:03d}.png"), dpi=300)
         plt.close(fig)
 
-
 def plot_diffusion_step(
     track_path,
     single_signal,
@@ -385,8 +396,7 @@ def plot_diffusion_step(
     calib_params=None,
     bounds_path=None,
 ):
-    """Saves a PNG graph of a single spectrum at a specific step in the
-    diffusion loop."""
+    """Saves a PNG graph of a single spectrum at a specific step in the diffusion loop."""
     if isinstance(single_signal, torch.Tensor):
         sig_np = single_signal.detach().cpu().numpy()
     else:
@@ -403,42 +413,38 @@ def plot_diffusion_step(
         y_label = "Amplitude (Normalized)"
         sig_plot = sig_np
 
+    fig, ax = plt.subplots(figsize=(10, 4))
+
     if calib_params is not None:
         if isinstance(calib_params, torch.Tensor):
             calib_np = calib_params.detach().cpu().numpy()
         else:
             calib_np = np.array(calib_params)
 
+        if bounds_path is None:
+            bounds_path = "data/Baq/global_calib_bounds.json"
+
         try:
-            coeffs = unnormalize_coeffs(calib_np, bounds_path=bounds_path)
+            coeffs = unnormalize_coeffs(calib_np, bounds_path=str(bounds_path))
         except Exception:
             coeffs = calib_np
 
-        channels = np.arange(L)
-        x_axis = np.polyval(coeffs[::-1], channels)
+        # Always evaluate energies in keV when calib_params are present
+        x_axis = compute_safe_energies(coeffs, L)
         x_label = "Energy (keV)"
         title_ext = " | Calibrated"
+
+        # Enforce X-axis limits: starts at 0.0, ends between 30.0 and 3000.0 keV
+        max_e = np.max(x_axis) if len(x_axis) > 0 else 3000.0
+        xlim_right = float(np.clip(max_e, 30.0, 3000.0))
+        ax.set_xlim(0.0, xlim_right)
     else:
         x_axis = np.arange(L)
         x_label = "Channel"
         title_ext = ""
+        ax.set_xlim(0, L)
 
-    fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(x_axis, sig_plot, color="blue", linewidth=1)
-
-    if str(label) == "0":
-        non_zero_indices = np.nonzero(sig_np)[0]
-        if len(non_zero_indices) > 0:
-            max_idx = non_zero_indices[-1]
-            max_x = x_axis[max_idx]
-            pad = (
-                (x_axis[min(max_idx + 50, L - 1)] - max_x)
-                if calib_params is not None
-                else 50
-            )
-            ax.set_xlim(max(0, x_axis[0]), max_x + pad)
-        else:
-            ax.set_xlim(max(0, x_axis[0]), x_axis[-1])
 
     if max_val is not None:
         ax.set_yscale("log")
@@ -454,7 +460,6 @@ def plot_diffusion_step(
 
     plt.savefig(os.path.join(track_path, f"{label}_plot.png"), dpi=300)
     plt.close(fig)
-
 
 def extract_gamma_peaks(
     spectrum,
@@ -475,7 +480,7 @@ def extract_gamma_peaks(
             coeffs = unnormalize_coeffs(calib_np, bounds_path=bounds_path)
         except Exception:
             coeffs = calib_np
-        x_axis = np.maximum(np.polyval(coeffs[::-1], channels), 0.0)
+        x_axis = compute_safe_energies(coeffs, L)
     else:
         x_axis = channels
 
@@ -582,6 +587,16 @@ def save_extracted_peaks_to_files(
     print(
         f"Successfully saved extracted peaks to:\n  +-- CSV (Excel): {csv_path}\n  +-- TXT:         {txt_path}"
     )
+
+
+def generate_synthetic_calib_coeffs(num_samples, num_params=4, device="cuda"):
+    """Generates synthetic normalized calibration parameters strictly in [0, 1].
+
+    When passed to unnormalize_coeffs, these values are mathematically guaranteed
+    to land strictly inside [calib_min, calib_max].
+    """
+    # Uniform sampling in [0, 1] ensures valid normalized vectors
+    return torch.rand(num_samples, num_params, device=device)
 
 
 if __name__ == "__main__":
