@@ -97,7 +97,8 @@ class DiffWave(nn.Module):
         mod_cfg = config['model']  # Access the model block
         calib_cfg = config.get('calibration', {})
 
-        self.use_film = calib_cfg.get('enabled', False)
+        cond_method = calib_cfg.get('conditioning_method', 'concat')
+        self.use_film = calib_cfg.get('enabled', False) and cond_method == 'film'
         self.num_calib_params = calib_cfg.get('num_params', 4)
         self.film_location = calib_cfg.get('film_location', 'before_output_proj')
 
