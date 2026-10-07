@@ -99,39 +99,56 @@ def format_param_count(num_params):
 def generate_run_name(config, total_params):
     """Generates a standardized, descriptive directory name for a training run
     based on the model and training configurations."""
-    layers = config["model"]["residual_layers"]
-    channels = config["model"]["residual_channels"]
-    schedule_type = config["model"]["schedule_type"]
-
+    model_cfg = config.get("model", {})
+    train_cfg = config.get("training", {})
     calib_cfg = config.get("calibration", {})
-    calib = calib_cfg.get("enabled", False)
+    path_cfg = config.get("paths", {})
+
+    # Model and training specs
+    layers = model_cfg.get("residual_layers", "unknown")
+    channels = model_cfg.get("residual_channels", "unknown")
+    schedule_type = model_cfg.get("schedule_type", "linear")
+    batch_size = train_cfg.get("batch_size", "unknown")
+    epochs = train_cfg.get("epochs", "unknown")
+
+    # NDA flag lookup
+    use_nda = train_cfg.get("use_nda", False)
+
+    # Calibration specs
+    calib_enabled = calib_cfg.get("enabled", False)
     cond_method = calib_cfg.get("conditioning_method", "concat")
     film_location = calib_cfg.get("film_location", "after_output_proj")
 
-    # Dynamically extract dataset name
-    path_cfg = config.get("paths", {})
+    # Dataset name
     dataset_name = path_cfg.get("dataset_name", "data")
 
+    # Extract target end for noise schedule
     if schedule_type == "cosine":
-        end = config["model"].get("cosine_target_end", "unknown")
+        end = model_cfg.get("cosine_target_end", "unknown")
     elif schedule_type == "linear":
-        end = config["model"].get("beta_final", "unknown")
+        end = model_cfg.get("beta_final", "unknown")
     else:
         end = "unknown"
 
     end_str = f"{end:.4g}" if isinstance(end, (float, int)) else end
     param_str = format_param_count(total_params)
 
-    batch_size = config["training"]["batch_size"]
-    epochs = config["training"]["epochs"]
+    # 1. Base run string
+    base_name = f"diff_{param_str}_L{layers}_C{channels}_bs{batch_size}_{schedule_type}-{end_str}_ep{epochs}"
 
-    if not calib:
-        run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{batch_size}_{schedule_type}-{end_str}_ep{epochs}_{dataset_name}"
-    else:
-        if cond_method == "concat":
-            run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{batch_size}_{schedule_type}-{end_str}_ep{epochs}_calib_{cond_method}_{dataset_name}"
-        else: # cond_method == "film"
-            run_name = f"diff_{param_str}_L{layers}_C{channels}_bs{batch_size}_{schedule_type}-{end_str}_ep{epochs}_calib_{cond_method}_{film_location}_{dataset_name}"
+    # 2. Calibration suffix
+    calib_suffix = ""
+    if calib_enabled:
+        if cond_method == "film":
+            calib_suffix = f"_calib_{cond_method}_{film_location}"
+        else:
+            calib_suffix = f"_calib_{cond_method}"
+
+    # 3. NDA suffix (placed before dataset)
+    nda_suffix = "_nda" if use_nda else ""
+
+    # Assemble final name
+    run_name = f"{base_name}{calib_suffix}{nda_suffix}_{dataset_name}"
     return run_name
 
 
