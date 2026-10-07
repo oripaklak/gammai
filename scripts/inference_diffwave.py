@@ -1,20 +1,28 @@
-import numpy as np
+import datetime
 import os
 import sys
-import datetime
-import torch
-import matplotlib.pyplot as plt
 from argparse import ArgumentParser
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
 from tqdm import tqdm
 
 # Add the project root to the Python path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from utils.helpers import (load_config, setup_device, plot_and_save_spectra,
-                           unnormalize, unnormalize_coeffs, normalize_coeffs,
-                           get_noise_schedule, plot_diffusion_step,
-                           save_extracted_peaks_to_files)
 from models.diffwave import DiffWave
+from utils.helpers import (
+    get_noise_schedule,
+    load_config,
+    normalize_coeffs,
+    plot_and_save_spectra,
+    plot_diffusion_step,
+    save_extracted_peaks_to_files,
+    setup_device,
+    unnormalize,
+    unnormalize_coeffs,
+)
 
 
 def run_reverse_diffusion_loop(
@@ -26,9 +34,10 @@ def run_reverse_diffusion_loop(
     global_step=None,
     max_val=None,
     conditioner=None,
+    sample_real_coeffs=False,
+    bounds_path=None,
 ):
-    """Reverse diffusion engine supporting both 'concat' and 'film' calibration
-    modes.
+    """Reverse diffusion engine supporting both 'concat' and 'film' calibration modes.
 
     Returns:
         tuple: (signal, returned_conditioner)
@@ -43,48 +52,47 @@ def run_reverse_diffusion_loop(
     cond_method = calib_cfg.get("conditioning_method", "concat")
     num_params = calib_cfg.get("num_params", 4)
     fast_sampling = gen_cfg.get("fast_sampling", True)
-    full_len = mod_cfg[
-        "signal_len"
-    ]  # L+4 for concat (already incremented in main), L for film
+    full_len = mod_cfg["signal_len"]
     num_tracking_steps = gen_cfg.get("num_tracking_steps", 0)
 
-    # If FiLM is active and no custom conditioner was provided, sample real calibration
-    # vectors randomly from the dataset coeff matrix and normalize them.
-    if is_calib and cond_method == "film" and conditioner is None:
-        base_dir = config["paths"]["base_dir"]
-        dataset_name = config["paths"]["dataset_name"]
-        dataset_dir = config["paths"].get(
-            "dataset_dir", os.path.join(base_dir, dataset_name)
-        )
-        coeff_path = os.path.join(dataset_dir, "coeff_matrix.npy")
+    # Resolve dataset directory and global calibration bounds path upfront
+    base_dir = config["paths"]["base_dir"]
+    dataset_name = config["paths"]["dataset_name"]
+    dataset_dir = config["paths"].get(
+        "dataset_dir", os.path.join(base_dir, dataset_name)
+    )
+    if bounds_path is None:
         bounds_path = os.path.join(dataset_dir, "global_calib_bounds.json")
 
-        if not os.path.exists(coeff_path):
-            raise FileNotFoundError(
-                f"FiLM calibration enabled but missing coeff matrix at: {coeff_path}"
+        # FiLM conditioning vector generation / sampling logic
+    if is_calib and cond_method == "film" and conditioner is None:
+        if sample_real_coeffs:
+            coeff_path = os.path.join(dataset_dir, "coeff_matrix.npy")
+
+            if not os.path.exists(coeff_path):
+                raise FileNotFoundError(
+                    f"FiLM calibration enabled but missing coeff matrix at: {coeff_path}"
+                )
+
+            raw_coeffs = np.load(coeff_path).astype(np.float32)
+            indices = np.random.choice(
+                len(raw_coeffs),
+                size=num_samples,
+                replace=(num_samples > len(raw_coeffs)),
             )
+            sampled_raw = raw_coeffs[indices]
 
-        # Sample num_samples random indices from real dataset coefficients
-        raw_coeffs = np.load(coeff_path).astype(np.float32)
-        indices = np.random.choice(
-            len(raw_coeffs),
-            size=num_samples,
-            replace=(num_samples > len(raw_coeffs)),
-        )
-        sampled_raw = raw_coeffs[indices]
+            try:
+                norm_coeffs = normalize_coeffs(
+                    sampled_raw, bounds_path=str(bounds_path)
+                )
+            except TypeError:
+                norm_coeffs = normalize_coeffs(sampled_raw)
 
-        # Normalize sampled coefficients using standard dataset scaling
-        try:
-            norm_coeffs = normalize_coeffs(
-                sampled_raw, bounds_path=str(bounds_path)
-            )
-        except TypeError:
-            norm_coeffs = normalize_coeffs(sampled_raw)
-
-        conditioner = torch.from_numpy(norm_coeffs).float().to(device)
-
-        for i, c in enumerate(conditioner, start=1):
-            print(f"{i}: {c[0]:.6e} {c[1]:.6e} {c[2]:.6e} {c[3]:.6e}")
+            conditioner = torch.from_numpy(norm_coeffs).float().to(device)
+        else:
+            # Generate valid normalized synthetic calibration vectors strictly in [0, 1]
+            conditioner = torch.rand(num_samples, num_params, device=device)
 
     with torch.no_grad():
         training_noise_schedule, talpha_cum = get_noise_schedule(mod_cfg)
@@ -168,6 +176,7 @@ def run_reverse_diffusion_loop(
                     "T",
                     max_val,
                     calib_params=calib_part,
+                    bounds_path=bounds_path,
                 )
 
             c1 = 1 / alpha[n] ** 0.5
@@ -212,6 +221,7 @@ def run_reverse_diffusion_loop(
                     label,
                     max_val,
                     calib_params=calib_part,
+                    bounds_path=bounds_path,
                 )
 
         signal = torch.clamp(signal, 0.0, 1.0)
@@ -227,23 +237,41 @@ def run_reverse_diffusion_loop(
 
     return signal, returned_conditioner
 
-def load_model_and_generate(config, device=torch.device('cuda'), track_dir=None, max_val=None, conditioner=None):
+
+def load_model_and_generate(
+    config,
+    device=torch.device("cuda"),
+    track_dir=None,
+    max_val=None,
+    conditioner=None,
+    sample_real_coeffs=False,
+    bounds_path=None,
+):
     """Initializes model, loads checkpoint weights, and triggers reverse diffusion."""
-    weights_path = config['generation']['model_path']
-    num_samples = config['generation']['num_samples_to_generate']
+    weights_path = config["generation"]["model_path"]
+    num_samples = config["generation"]["num_samples_to_generate"]
 
     if not os.path.exists(weights_path):
         raise FileNotFoundError(f"Weights not found at {weights_path}")
 
     checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
     model = DiffWave(config).to(device)
-    model.load_state_dict(checkpoint['model'])
+    model.load_state_dict(checkpoint["model"])
     model.eval()
 
     return run_reverse_diffusion_loop(
-        model, config, num_samples, device, track_dir=track_dir, global_step="inference", max_val=max_val,
-        conditioner=conditioner
+        model,
+        config,
+        num_samples,
+        device,
+        track_dir=track_dir,
+        global_step="inference",
+        max_val=max_val,
+        conditioner=conditioner,
+        sample_real_coeffs=sample_real_coeffs,
+        bounds_path=bounds_path,
     )
+
 
 def execute_inference_pipeline(
     config,
@@ -255,9 +283,9 @@ def execute_inference_pipeline(
     cond_method,
     target_conditioner=None,
     bounds_path=None,
+    sample_real_coeffs=False,
 ):
-    """Handles IO, execution, slicing, and un-normalization of generated
-    samples."""
+    """Handles IO, execution, slicing, and un-normalization of generated samples."""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     model_name = os.path.splitext(os.path.basename(weights_path))[0]
 
@@ -272,7 +300,10 @@ def execute_inference_pipeline(
         model_name = f"{model_name}_T={num_fast_steps}"
 
     run_name = os.path.basename(os.path.dirname(weights_path))
-    save_dir = f"results/{run_name}/{model_name}_{timestamp}"
+    if (sample_real_coeffs):
+        save_dir = (f"results/{run_name}/{model_name}_{timestamp}")
+    else:
+        save_dir = f"results/{run_name}/{model_name}_{timestamp}_generated_coeffs"
     os.makedirs(save_dir, exist_ok=True)
 
     track_dir = os.path.join(save_dir, "denoising_process")
@@ -280,13 +311,15 @@ def execute_inference_pipeline(
 
     max_val = np.load(scaling_path)
 
-    # Run reverse diffusion loop (returns 2 variables)
+    # Run reverse diffusion loop
     signal, returned_conditioner = load_model_and_generate(
         config=config,
         device=device,
         track_dir=track_dir,
         max_val=max_val,
         conditioner=target_conditioner,
+        sample_real_coeffs=sample_real_coeffs,
+        bounds_path=bounds_path,
     )
 
     generated_scaled = signal.cpu().numpy()
@@ -340,6 +373,12 @@ def main(args):
     calib_cfg = config.get("calibration", {})
     gen_cfg = config.get("generation", {})
 
+    # CLI parameter overrides
+    if args.num_samples is not None:
+        config["generation"]["num_samples_to_generate"] = args.num_samples
+    if args.model_path is not None:
+        config["generation"]["model_path"] = args.model_path
+
     min_prominence = gen_cfg.get("min_prominence", 10.0)
     detect_peaks = gen_cfg.get("detect_peaks", False)
     is_calib = calib_cfg.get("enabled", False)
@@ -373,6 +412,7 @@ def main(args):
             num_calib_params,
             cond_method,
             bounds_path=bounds_path,
+            sample_real_coeffs=args.sample_real_coeffs,
         )
     )
 
@@ -398,7 +438,7 @@ def main(args):
             min_prominence=min_prominence,
         )
 
-    # Only save peak report files if detect_peaks is True
+    # Save peak reports if peak detection is enabled
     if detect_peaks:
         save_extracted_peaks_to_files(
             generated_counts,
@@ -425,5 +465,22 @@ if __name__ == "__main__":
         type=str,
         default="configs/models/diffwave.yaml",
         help="Path to model config",
+    )
+    parser.add_argument(
+        "--sample_real_coeffs",
+        action="store_true",
+        help="Sample real calibration coefficients from dataset and normalize them for FiLM conditioning",
+    )
+    parser.add_argument(
+        "--num_samples",
+        type=int,
+        default=None,
+        help="Override number of samples to generate",
+    )
+    parser.add_argument(
+        "--model_path",
+        type=str,
+        default=None,
+        help="Override model checkpoint weights path",
     )
     main(parser.parse_args())
