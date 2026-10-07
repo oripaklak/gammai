@@ -113,8 +113,12 @@ python scripts/plot_latent_space.py \
 
 ### Diffusion
 **Generate synthetic spectra using the DiffWave model:**
+
 ```bash
-python scripts/inference_diffwave.py --exp configs/experiments/diffwave_base.yaml --model configs/models/diffwave.yaml
+python scripts/inference_diffwave.py \
+    --exp configs/experiments/diffwave_Baq.yaml \
+    --num_samples 200
+    --sample_real_coeffs # to standard sample the coeff, omit this 
 ```
 
 ## Data Retrieval & Memorization Check
@@ -136,9 +140,9 @@ python scripts/retrieval.py \
 ```bash
 python scripts/retrieval.py \
   --results_dir results/YOUR_RUN_NAME/YOUR_TIMESTAMP_FOLDER \
-  --metric sift \
+  --metric cosine \
   --n_clusters 64 \
-  --calib_weight 5000
+  --calib_weight 0.02
 
 ```
 
@@ -147,6 +151,6 @@ python scripts/retrieval.py \
 **Key Arguments:**
 
 * `--results_dir`: Path to the inference output directory containing `all_*_samples.npy`.
-* `--metric`: Distance metric to use (`euclidean` or `sift`). Default is `euclidean`.
+* `--metric`: Distance metric to use (`euclidean` or `sift` or `cosine`). Default is `cosine`.
 * `--n_clusters`: Number of visual words for the SIFT codebook (used only with `--metric sift`). Default is `64`.
 * `--calib_weight`: Relative weight of calibration coefficient distance compared to shape distance. Default is `0`.
