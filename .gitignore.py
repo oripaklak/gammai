@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.idea/
+.env
+*.pt
+*.pth
+*.ckpt
+data/
+checkpoints/
