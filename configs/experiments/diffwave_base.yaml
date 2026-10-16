@@ -1,0 +1,51 @@
+# ==============================================================================
+# DiffWave Experiment Configuration
+# ==============================================================================
+experiment:
+  project_name: "gammai-diff"
+
+calibration:
+  enabled: true
+  num_params: 4
+  conditioning_method: "film" # Options: "concat", "film"
+  film_location: "before_output_proj" # Options: "before_output_proj" or "after_output_proj"
+
+hardware:
+  num_gpus: 2
+  device_id: 0
+  fp16: false
+
+training:
+  batch_size: 16
+  epochs: 1000
+  learning_rate: 0.0002
+  seed: 40
+  max_grad_norm: null
+  checkpoint_freq: 2000 # steps
+  print_freq: 60 # steps
+  keep_last_n_checkpoints: 10
+  resume: false # Use for continuing crashed/stopped runs. Restores the entire state (weights, optimizer, scaler, step count)
+  use_pretrained_weights: false # Use for fine-tuning. Loads ONLY the neural network weights
+
+generation:
+  model_path: "checkpoints/diff_9M_L36_C128_bs16_cosine-0.01_ep1000_calib_film_IAEA_Baq/weights-142000.pt"
+  num_samples_to_generate: 100
+  fast_sampling: false
+  num_tracking_steps: 10 # Set to 0 to disable tracking completely
+  detect_peaks: true
+  min_prominence: 10
+
+tracking:
+  wandb:
+    enabled: true
+    log_model_graph: true
+    watch_log_freq: 10
+
+paths:
+  base_dir: "data"
+  dataset_name: "IAEA_Baq"
+  pretrained_weights_path: "checkpoints/diff_200M_L36_C800_bs16_lr0.0002_linear_ep400/weights-10000.pt"
+  checkpoints_dir: "checkpoints"
+
+metrics:
+  f_mem_threshold: 0.5

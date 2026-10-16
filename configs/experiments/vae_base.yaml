@@ -1,0 +1,34 @@
+# ==============================================================================
+# VAE Experiment Configuration
+# ==============================================================================
+experiment:
+  project_name: "gammai-vae"
+
+hardware:
+  num_gpus: 1
+  device_id: 0
+
+training:
+  batch_size: 64
+  epochs: 50
+  learning_rate: 0.0001
+  seed: 40
+  eval_freq: 20
+  checkpoint_freq: 200 # epochs
+  print_freq: 10 # epochs
+  keep_last_n_checkpoints: 5
+
+generation:
+  model_path: "checkpoints/vae_ld32_bs64_lr0.0001_ep10000/checkpoint_ep10000.pth"
+  num_samples_to_generate: 100
+
+tracking:
+  wandb:
+    enabled: true
+    log_model_graph: true
+    watch_log_freq: 10
+
+paths:
+  data_path: "data/spectrum_matrix.npy"
+  scaling_factor_path: "data/scaling_factor.npy"
+  checkpoints_dir: "checkpoints"

@@ -1,0 +1,25 @@
+# ==============================================================================
+# DiffWave Model Configuration
+# ==============================================================================
+model:
+  residual_layers: 36 # N in the paper, L here
+  residual_channels: 128 # C
+  dilation_cycle_length: 12 # note: residual_layers / dilation_cycle_length = number of repeating blocks
+  unconditional: true
+  signal_len: 16384 # L in the paper
+
+# Diffusion Noise Schedule Parameters
+  T: 200
+  schedule_type: "cosine"  # "linear" or "cosine"
+  cosine_s: 0.008          # The 's' offset parameter from the paper
+  cosine_target_end: 0.01  # The target final value for alpha_bar (0.0 for pure cosine)
+
+  beta_init: 0.0001
+  beta_final: 0.02
+
+  # Fast Sampling Inference Parameters
+  inference_noise_schedule: [
+    0.000325, 0.000813, 0.001633, 0.002821, 0.004456, 0.006672, 0.009665, 0.013725,
+    0.019277, 0.026989, 0.037841, 0.053381, 0.075841, 0.108427, 0.155829, 0.224365,
+    0.321453, 0.452667, 0.612711, 0.781845
+  ]

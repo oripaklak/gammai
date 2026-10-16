@@ -1,0 +1,57 @@
+# ==============================================================================
+# DiffWave Experiment Configuration
+# ==============================================================================
+experiment:
+  project_name: "gammai-diff"
+
+calibration:
+  enabled: true
+  num_params: 4
+  conditioning_method: "film" # Options: "concat", "film"
+  film_location: "before_output_proj" # Options: "before_output_proj" or default: "after_output_proj"
+
+hardware:
+  num_gpus: 2
+  device_id: 0
+  fp16: false
+
+training:
+  batch_size: 16
+  epochs: 1000
+  learning_rate: 0.0002
+  seed: 40
+  max_grad_norm: null
+  checkpoint_freq: 2000 # steps
+  print_freq: 60 # steps
+  keep_last_n_checkpoints: 20
+
+  resume: false # Use for continuing crashed/stopped runs. Restores the entire state (weights, optimizer, scaler, step count)
+  use_pretrained_weights: false # Use for fine-tuning. Loads ONLY the neural network weights
+
+  use_nda: true          # Set to false if you want to turn off NDA loss
+  lambda_nda: 0.01       # Weight of the NDA penalty term
+  nda_c_const: 10.0      # Epsilon constant to prevent division by zero / exploding gradients
+
+
+generation:
+  model_path: "checkpoints/diff_9M_L36_C128_bs16_cosine-0.01_ep1000_calib_film_before_output_proj_nda_Baq/weights-82000.pt"
+  num_samples_to_generate: 20
+  fast_sampling: false
+  num_tracking_steps: 10 # Set to 0 to disable tracking completely
+  detect_peaks: false
+  min_prominence: 10
+
+tracking:
+  wandb:
+    enabled: true
+    log_model_graph: true
+    watch_log_freq: 10
+
+paths:
+  base_dir: "data"
+  dataset_name: "Baq"
+  pretrained_weights_path: "checkpoints/diff_9M_L36_C128_bs16_cosine-0.01_ep1000_calib_film_Baq/weights-80000.pt"
+  checkpoints_dir: "checkpoints"
+
+metrics:
+  f_mem_threshold: 0.5
