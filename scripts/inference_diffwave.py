@@ -12,17 +12,8 @@ from tqdm import tqdm
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from models.diffwave import DiffWave
-from utils.helpers import (
-    get_noise_schedule,
-    load_config,
-    normalize_coeffs,
-    plot_and_save_spectra,
-    plot_diffusion_step,
-    save_extracted_peaks_to_files,
-    setup_device,
-    unnormalize,
-    unnormalize_coeffs,
-)
+import utils.helpers as helpers
+from utils.plot import plot_diffusion_step, plot_and_save_spectra
 
 
 def run_reverse_diffusion_loop(
@@ -83,11 +74,11 @@ def run_reverse_diffusion_loop(
             sampled_raw = raw_coeffs[indices]
 
             try:
-                norm_coeffs = normalize_coeffs(
+                norm_coeffs = helpers.normalize_coeffs(
                     sampled_raw, bounds_path=str(bounds_path)
                 )
             except TypeError:
-                norm_coeffs = normalize_coeffs(sampled_raw)
+                norm_coeffs = helpers.normalize_coeffs(sampled_raw)
 
             conditioner = torch.from_numpy(norm_coeffs).float().to(device)
         else:
@@ -95,7 +86,7 @@ def run_reverse_diffusion_loop(
             conditioner = torch.rand(num_samples, num_params, device=device)
 
     with torch.no_grad():
-        training_noise_schedule, talpha_cum = get_noise_schedule(mod_cfg)
+        training_noise_schedule, talpha_cum = helpers.get_noise_schedule(mod_cfg)
         T = mod_cfg["T"]
 
         inference_noise_schedule = (
@@ -330,20 +321,20 @@ def execute_inference_pipeline(
             gen_spectrum_norm = generated_scaled[:, :-num_calib_params]
             gen_coeffs_norm = generated_scaled[:, -num_calib_params:]
 
-            generated_counts = unnormalize(gen_spectrum_norm, max_val)
+            generated_counts = helpers.unnormalize(gen_spectrum_norm, max_val)
             generated_counts = np.clip(
                 np.round(generated_counts), a_min=0, a_max=None
             )
             try:
-                gen_coeffs = unnormalize_coeffs(
+                gen_coeffs = helpers.unnormalize_coeffs(
                     gen_coeffs_norm, bounds_path=str(bounds_path)
                 )
             except TypeError:
-                gen_coeffs = unnormalize_coeffs(gen_coeffs_norm)
+                gen_coeffs = helpers.unnormalize_coeffs(gen_coeffs_norm)
 
         elif cond_method == "film":
             gen_spectrum_norm = generated_scaled  # Signal is purely L length
-            generated_counts = unnormalize(gen_spectrum_norm, max_val)
+            generated_counts = helpers.unnormalize(gen_spectrum_norm, max_val)
             generated_counts = np.clip(
                 np.round(generated_counts), a_min=0, a_max=None
             )
@@ -351,15 +342,15 @@ def execute_inference_pipeline(
             if returned_conditioner is not None:
                 gen_coeffs_norm = returned_conditioner.cpu().numpy()
                 try:
-                    gen_coeffs = unnormalize_coeffs(
+                    gen_coeffs = helpers.unnormalize_coeffs(
                         gen_coeffs_norm, bounds_path=str(bounds_path)
                     )
                 except TypeError:
-                    gen_coeffs = unnormalize_coeffs(gen_coeffs_norm)
+                    gen_coeffs = helpers.unnormalize_coeffs(gen_coeffs_norm)
             else:
                 gen_coeffs = None
     else:
-        generated_counts = unnormalize(generated_scaled, max_val)
+        generated_counts = helpers.unnormalize(generated_scaled, max_val)
         generated_counts = np.clip(
             np.round(generated_counts), a_min=0, a_max=None
         )
@@ -369,7 +360,7 @@ def execute_inference_pipeline(
 
 
 def main(args):
-    config = load_config(args.exp, args.model)
+    config = helpers.load_config(args.exp, args.model)
     calib_cfg = config.get("calibration", {})
     gen_cfg = config.get("generation", {})
 
@@ -388,7 +379,7 @@ def main(args):
     if is_calib and cond_method == "concat":
         config["model"]["signal_len"] += num_calib_params
 
-    device = setup_device(config["hardware"], mode="inference")
+    device = helpers.setup_device(config["hardware"], mode="inference")
     weights_path = config["generation"]["model_path"]
     num_samples = config["generation"]["num_samples_to_generate"]
 
@@ -440,7 +431,7 @@ def main(args):
 
     # Save peak reports if peak detection is enabled
     if detect_peaks:
-        save_extracted_peaks_to_files(
+        helpers.save_extracted_peaks_to_files(
             generated_counts,
             save_dir,
             gen_coeffs if is_calib else None,
