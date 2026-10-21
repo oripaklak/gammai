@@ -20,21 +20,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from inference_diffwave import run_reverse_diffusion_loop
 from models.diffwave import DiffWave
+from models.loss import LimitedDataLoss
 from utils.create_nda import apply_nda_mutations
 from utils.dataset import from_path
-from utils.helpers import (
-    count_parameters,
-    format_param_count,
-    generate_run_name,
-    get_noise_schedule,
-    load_config,
-    plot_noise_schedule,
-    register_graceful_shutdown,
-    set_seed,
-    setup_device,
-)
+import utils.helpers as helpers
+from utils.plot import plot_noise_schedule
 from utils.metrics import calculate_f_mem, calculate_fid, calculate_kid
-
+from utils.checkpoints import CheckpointManager
 
 # ==============================================================================
 # NDA Batch Helper (Applies utils/create_nda.py mutations)
@@ -75,6 +67,7 @@ class DiffWaveLearner:
     def __init__(self, model_dir, model, dataset, optimizer, config):
         os.makedirs(model_dir, exist_ok=True)
         self.model_dir = model_dir
+        self.ckpt_dir = os.path.join(self.model_dir, "checkpoints")
         self.model = model
         self.dataset = dataset
         self.optimizer = optimizer
@@ -113,7 +106,7 @@ class DiffWaveLearner:
             os.makedirs(self.track_dir_eval, exist_ok=True)
             os.makedirs(self.track_dir_train, exist_ok=True)
 
-        beta, alpha_bar = get_noise_schedule(self.model_cfg)
+        beta, alpha_bar = helpers.get_noise_schedule(self.model_cfg)
         plot_noise_schedule(beta, alpha_bar, model_dir)
 
         self.noise_level = torch.tensor(
@@ -128,97 +121,125 @@ class DiffWaveLearner:
             os.makedirs(os.path.dirname(scaling_path), exist_ok=True)
             np.save(scaling_path, self.max_val)
 
+        self.ckpt_manager = CheckpointManager(
+            checkpoint_dir=self.ckpt_dir,
+            model=self.model,
+            optimizer=self.optimizer,
+            scaler=self.scaler,
+            config=self.config,
+            keep_last_n=self.train_cfg.get("keep_last_n_checkpoints", 5),
+            is_master=self.is_master
+        )
+
+    # def state_dict(self):
+    #     if hasattr(self.model, "module") and isinstance(
+    #         self.model.module, nn.Module
+    #     ):
+    #         model_state = self.model.module.state_dict()
+    #     else:
+    #         model_state = self.model.state_dict()
+    #     return {
+    #         "step": self.step,
+    #         "model": {
+    #             k: v.cpu() if isinstance(v, torch.Tensor) else v
+    #             for k, v in model_state.items()
+    #         },
+    #         "optimizer": {
+    #             k: v.cpu() if isinstance(v, torch.Tensor) else v
+    #             for k, v in self.optimizer.state_dict().items()
+    #         },
+    #         "config": self.config,
+    #         "scaler": self.scaler.state_dict(),
+    #         "torch_rng_state": torch.get_rng_state(),
+    #         "cuda_rng_state": torch.cuda.get_rng_state(),
+    #         "numpy_rng_state": np.random.get_state(),
+    #     }
+    #
+    # def load_state_dict(self, state_dict):
+    #     if hasattr(self.model, "module") and isinstance(
+    #         self.model.module, nn.Module
+    #     ):
+    #         self.model.module.load_state_dict(state_dict["model"])
+    #     else:
+    #         self.model.load_state_dict(state_dict["model"])
+    #     self.optimizer.load_state_dict(state_dict["optimizer"])
+    #     self.scaler.load_state_dict(state_dict["scaler"])
+    #     self.step = state_dict["step"]
+    #
+    #     if "torch_rng_state" in state_dict:
+    #         torch.set_rng_state(state_dict["torch_rng_state"])
+    #         torch.cuda.set_rng_state(state_dict["cuda_rng_state"])
+    #         np.random.set_state(state_dict["numpy_rng_state"])
+
     def state_dict(self):
-        if hasattr(self.model, "module") and isinstance(
-            self.model.module, nn.Module
-        ):
-            model_state = self.model.module.state_dict()
-        else:
-            model_state = self.model.state_dict()
-        return {
-            "step": self.step,
-            "model": {
-                k: v.cpu() if isinstance(v, torch.Tensor) else v
-                for k, v in model_state.items()
-            },
-            "optimizer": {
-                k: v.cpu() if isinstance(v, torch.Tensor) else v
-                for k, v in self.optimizer.state_dict().items()
-            },
-            "config": self.config,
-            "scaler": self.scaler.state_dict(),
-            "torch_rng_state": torch.get_rng_state(),
-            "cuda_rng_state": torch.cuda.get_rng_state(),
-            "numpy_rng_state": np.random.get_state(),
-        }
+        return self.ckpt_manager.get_state_dict(step_or_epoch=self.step)
 
     def load_state_dict(self, state_dict):
-        if hasattr(self.model, "module") and isinstance(
-            self.model.module, nn.Module
-        ):
-            self.model.module.load_state_dict(state_dict["model"])
-        else:
-            self.model.load_state_dict(state_dict["model"])
-        self.optimizer.load_state_dict(state_dict["optimizer"])
-        self.scaler.load_state_dict(state_dict["scaler"])
-        self.step = state_dict["step"]
-
-        if "torch_rng_state" in state_dict:
-            torch.set_rng_state(state_dict["torch_rng_state"])
-            torch.cuda.set_rng_state(state_dict["cuda_rng_state"])
-            np.random.set_state(state_dict["numpy_rng_state"])
+        self.step = self.ckpt_manager.load_state_dict(state_dict)
 
     def save_to_checkpoint(self, filename="weights"):
-        save_basename = f"{filename}-{self.step}.pt"
-        save_name = f"{self.model_dir}/{save_basename}"
-        link_name = f"{self.model_dir}/{filename}.pt"
-        torch.save(self.state_dict(), save_name)
-        if os.name == "nt":
-            torch.save(self.state_dict(), link_name)
-        else:
-            if os.path.islink(link_name):
-                os.unlink(link_name)
-            os.symlink(save_basename, link_name)
-
-            self.saved_checkpoints.append(save_name)
-            keep_n = self.train_cfg.get("keep_last_n_checkpoints", 5)
-
-            if len(self.saved_checkpoints) > keep_n:
-                oldest_ckpt = self.saved_checkpoints.pop(0)
-                if os.path.exists(oldest_ckpt):
-                    os.remove(oldest_ckpt)
+        self.ckpt_manager.save(step_or_epoch=self.step, filename=filename)
 
     def restore_from_checkpoint(self, filename="weights"):
-        try:
-            checkpoint = torch.load(
-                f"{self.model_dir}/{filename}.pt", weights_only=False
-            )
-            self.load_state_dict(checkpoint)
-            return True
-        except FileNotFoundError:
-            return False
+        success, step = self.ckpt_manager.restore(filename=filename)
+        if success:
+            self.step = step
+        return success
 
     def load_pretrained_weights(self, filepath):
-        try:
-            checkpoint = torch.load(
-                filepath, map_location="cpu", weights_only=False
-            )
-            model_state = checkpoint.get("model", checkpoint)
-
-            if hasattr(self.model, "module") and isinstance(
-                self.model.module, nn.Module
-            ):
-                self.model.module.load_state_dict(model_state)
-            else:
-                self.model.load_state_dict(model_state)
-
-            return True
-        except Exception as e:
-            if self.is_master:
-                print(
-                    f"Failed to load pre-trained weights from {filepath}. Error: {e}"
-                )
-            raise
+        return self.ckpt_manager.load_pretrained(filepath)
+    
+    # def save_to_checkpoint(self, filename="weights"):
+    #     save_basename = f"{filename}-{self.step}.pt"
+    #     save_name = f"{self.model_dir}/{save_basename}"
+    #     link_name = f"{self.model_dir}/{filename}.pt"
+    #     torch.save(self.state_dict(), save_name)
+    #     if os.name == "nt":
+    #         torch.save(self.state_dict(), link_name)
+    #     else:
+    #         if os.path.islink(link_name):
+    #             os.unlink(link_name)
+    #         os.symlink(save_basename, link_name)
+    # 
+    #         self.saved_checkpoints.append(save_name)
+    #         keep_n = self.train_cfg.get("keep_last_n_checkpoints", 5)
+    # 
+    #         if len(self.saved_checkpoints) > keep_n:
+    #             oldest_ckpt = self.saved_checkpoints.pop(0)
+    #             if os.path.exists(oldest_ckpt):
+    #                 os.remove(oldest_ckpt)
+    # 
+    # def restore_from_checkpoint(self, filename="weights"):
+    #     try:
+    #         checkpoint = torch.load(
+    #             f"{self.model_dir}/{filename}.pt", weights_only=False
+    #         )
+    #         self.load_state_dict(checkpoint)
+    #         return True
+    #     except FileNotFoundError:
+    #         return False
+    # 
+    # def load_pretrained_weights(self, filepath):
+    #     try:
+    #         checkpoint = torch.load(
+    #             filepath, map_location="cpu", weights_only=False
+    #         )
+    #         model_state = checkpoint.get("model", checkpoint)
+    # 
+    #         if hasattr(self.model, "module") and isinstance(
+    #             self.model.module, nn.Module
+    #         ):
+    #             self.model.module.load_state_dict(model_state)
+    #         else:
+    #             self.model.load_state_dict(model_state)
+    # 
+    #         return True
+    #     except Exception as e:
+    #         if self.is_master:
+    #             print(
+    #                 f"Failed to load pre-trained weights from {filepath}. Error: {e}"
+    #             )
+    #         raise
 
     # ==============================================================================
     # Evaluation Routine
@@ -415,17 +436,14 @@ class DiffWaveLearner:
         )
 
         with self.autocast:
-            t = torch.randint(
-                0, len(self.noise_level), [B], device=self.device
-            )
+            t = torch.randint(0, len(self.noise_level), [B], device=self.device) # (B,) for example [131, 63, 88, 6, 59, 21, 64, 84]
             noise_scale = self.noise_level[t].unsqueeze(1)
             noise_scale_sqrt = noise_scale**0.5
             one_minus_alpha_sqrt = (1.0 - noise_scale) ** 0.5
 
-            noise = torch.randn_like(full_signal)
-            noisy_signal = (
-                noise_scale_sqrt * full_signal + one_minus_alpha_sqrt * noise
-            )
+            noise = torch.randn_like(full_signal) # (B, signal_len)
+            noisy_signal = noise_scale_sqrt * full_signal + one_minus_alpha_sqrt * noise # (B, signal_len)
+
 
             # 1. Forward Pass - Predict Noise
             predicted = self.model(noisy_signal, t, conditioner=conditioner)
@@ -515,6 +533,7 @@ class DiffWaveLearner:
             )
 
             for i, features in enumerate(iterator):
+                # features = {'conditioner': (B,num_coeff), 'signal': (B,signal_len)}
                 if epoch == start_epoch and i < batches_to_skip:
                     continue
 
@@ -630,7 +649,7 @@ def _train_impl(replica_id, model, dataset, config, run_dir):
             weight_path = config["paths"].get("pretrained_weights_path", "")
             learner.load_pretrained_weights(weight_path)
 
-    register_graceful_shutdown(learner, config)
+    helpers.register_graceful_shutdown(learner, config)
     learner.train()
 
     if learner.is_master and config["tracking"]["wandb"]["enabled"]:
@@ -638,7 +657,7 @@ def _train_impl(replica_id, model, dataset, config, run_dir):
 
 
 def train(config, run_dir):
-    device = setup_device(config["hardware"], mode="training")
+    device = helpers.setup_device(config["hardware"], mode="training")
 
     base_dir = config["paths"]["base_dir"]
     dataset_name = config["paths"]["dataset_name"]
@@ -688,7 +707,7 @@ def main():
     parser.add_argument(
         "--exp",
         type=str,
-        default="configs/experiments/diffwave_base.yaml",
+        default="configs/experiments/diffwave_Baq.yaml",
         help="Path to experiment config",
     )
     parser.add_argument(
@@ -699,7 +718,7 @@ def main():
     )
     args = parser.parse_args()
 
-    config = load_config(args.exp, args.model)
+    config = helpers.load_config(args.exp, args.model)
     train_cfg = config["training"]
     hw_cfg = config["hardware"]
     path_cfg = config["paths"]
@@ -709,12 +728,8 @@ def main():
 
     dataset_dir = os.path.join(base_dir, dataset_name)
     config["paths"]["dataset_dir"] = dataset_dir
-    config["paths"]["data_path"] = os.path.join(
-        dataset_dir, "spectrum_matrix.npy"
-    )
-    config["paths"]["scaling_factor_path"] = os.path.join(
-        dataset_dir, "scaling_factor.npy"
-    )
+    config["paths"]["data_path"] = os.path.join(dataset_dir, "spectrum_matrix.npy")
+    config["paths"]["scaling_factor_path"] = os.path.join(dataset_dir, "scaling_factor.npy")
 
     calib_cfg = config.get("calibration", {})
     is_calib = calib_cfg.get("enabled", False)
@@ -724,14 +739,14 @@ def main():
     if is_calib and conditioning_method == "concat":
         config["model"]["signal_len"] += num_calib_params
 
-    set_seed(train_cfg["seed"])
+    helpers.set_seed(train_cfg["seed"])
 
     temp_model = DiffWave(config)
-    total_params = count_parameters(temp_model)
+    total_params = helpers.count_parameters(temp_model)
     config["model"]["total_params"] = total_params
     del temp_model
 
-    run_name = generate_run_name(config, total_params)
+    run_name = helpers.generate_run_name(config, total_params)
     run_dir = os.path.join(path_cfg["checkpoints_dir"], run_name)
 
     replica_count = (
