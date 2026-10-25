@@ -4,6 +4,7 @@ import signal
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from . import helpers
 
 def plot_noise_schedule(beta, alpha_bar, run_dir):
     """Generates and saves visual plots for the diffusion noise schedules."""
@@ -68,7 +69,7 @@ def plot_and_save_spectra(
         fig, ax = plt.subplots(figsize=(12, 4.5))
 
         if coeffs is not None and len(coeffs) == 4:
-            x_axis = compute_safe_energies(coeffs, L)
+            x_axis = helpers.compute_safe_energies(coeffs, L)
             x_label = "Energy (keV)"
             max_e = np.max(x_axis) if len(x_axis) > 0 else 3000.0
             xlim_right = float(np.clip(max_e, 30.0, 3000.0))
@@ -89,7 +90,7 @@ def plot_and_save_spectra(
 
         energies, counts = [], []
         if detect_peaks:
-            peaks_data = extract_gamma_peaks(
+            peaks_data = helpers.extract_gamma_peaks(
                 spectrum,
                 calib_coeffs=coeffs,
                 min_prominence=min_prominence,
@@ -164,7 +165,7 @@ def plot_diffusion_step(
     L = len(sig_np)
 
     if max_val is not None:
-        sig_np = unnormalize(sig_np, max_val)
+        sig_np = helpers.unnormalize(sig_np, max_val)
         sig_np = np.clip(np.round(sig_np), a_min=0, a_max=None)
         y_label = "Counts (Log Scale)"
         sig_plot = np.maximum(sig_np, 1e-1)
@@ -184,12 +185,12 @@ def plot_diffusion_step(
             bounds_path = "data/Baq/global_calib_bounds.json"
 
         try:
-            coeffs = unnormalize_coeffs(calib_np, bounds_path=str(bounds_path))
+            coeffs = helpers.unnormalize_coeffs(calib_np, bounds_path=str(bounds_path))
         except Exception:
             coeffs = calib_np
 
         # Always evaluate energies in keV when calib_params are present
-        x_axis = compute_safe_energies(coeffs, L)
+        x_axis = helpers.compute_safe_energies(coeffs, L)
         x_label = "Energy (keV)"
         title_ext = " | Calibrated"
 
