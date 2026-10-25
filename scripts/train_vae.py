@@ -191,7 +191,6 @@ def train(model, dataloader, optimizer, device, config, checkpoint_dir, run_name
             )
             print(f"--- Saved intermediate checkpoint: {saved_path} ---")
 
-    print(f"Training complete. Final model saved to: {final_save_path}")
     print("Waiting 5 seconds for file I/O to finish...")
     time.sleep(5)
 
@@ -246,17 +245,33 @@ def main():
     model = SpectrumVAE(L=L, latent_dim=model_cfg["latent_dim"]).to(device)
 
     # 4. Count Parameters & Build run_name
+
+    # Clean float format for learning rate (e.g., 0.0002 -> 2e-4)
+    lr_str = f"{lr:.0e}".replace("-0", "-") if isinstance(lr, float) else lr
+    # Format training duration (step-based with fallback to epochs if still epoch-based)
+    if steps is not None:
+        steps_str = (
+            f"{steps // 1000}k"
+            if isinstance(steps, int) and steps >= 1000
+            else f"{steps}"
+        )
+        duration_str = f"steps{steps_str}"
+    else:
+        duration_str = f"ep{train_cfg.get('epochs', 'unk')}"
     total_params = helpers.count_parameters(model)
     param_str = helpers.format_param_count(total_params)
     print(f"Model Initialized! Total Trainable Parameters: {total_params:,} ({param_str})")
 
+    # 2. Assemble standardized run name:
+    # [Model]_[Dataset]_[Arch]_[TrainingParams]_[Seed]
     run_name = (
         f"vae_{param_str}_"
+        f"{path_cfg['dataset_name']}"
         f"ld{model_cfg['latent_dim']}_"
         f"bs{train_cfg['batch_size']}_"
-        f"lr{train_cfg['learning_rate']}_"
-        f"ep{train_cfg['epochs']}_"
-        f"{path_cfg['dataset_name']}"
+        f"lr{lr_str}_"
+        f"{duration_str}_"
+        f"s{seed}"
     )
 
     # Setup Experiment Directory & Checkpoint Directory
