@@ -22,3 +22,22 @@ class LimitedDataLoss(nn.Module):
 
         total_loss = recon_loss + ood_loss
         return total_loss, recon_loss, ood_loss
+
+class Loss(nn.Module):
+    def __init__(self, loss_type: str = "l1"):
+        super().__init__()
+        loss_type = loss_type.lower()
+        if loss_type == "l1":
+            self.loss_fn = nn.L1Loss()
+        elif loss_type in ("l2", "mse"):
+            self.loss_fn = nn.MSELoss()
+        else:
+            raise ValueError(f"Unsupported loss_type '{loss_type}'. Choose 'l1' or 'l2'/'mse'.")
+
+    def forward(self, pred_noise, target_noise):
+        # Align shapes if one has a singleton channel dimension (e.g., [B, 1, L] vs [B, L])
+        if pred_noise.shape != target_noise.shape:
+            pred_noise = pred_noise.view_as(target_noise)
+
+        return self.loss_fn(pred_noise, target_noise)
+        
