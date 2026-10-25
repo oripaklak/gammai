@@ -1,19 +1,19 @@
+import argparse
 import datetime
 import os
 import sys
-from argparse import ArgumentParser
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from tqdm import tqdm
 
-# Add the project root to the Python path
+# Add project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from models.compressor import create_compressor
 from models.diffwave import DiffWave
 import utils.helpers as helpers
-from utils.plot import plot_diffusion_step, plot_and_save_spectra
+from utils.plot import plot_and_save_spectra, plot_diffusion_step
 
 
 def run_reverse_diffusion_loop(
@@ -27,17 +27,18 @@ def run_reverse_diffusion_loop(
     conditioner=None,
     sample_real_coeffs=False,
     bounds_path=None,
+    compressor=None,
 ):
-    """Reverse diffusion engine supporting both 'concat' and 'film' calibration modes.
-
-    Returns:
-        tuple: (signal, returned_conditioner)
-            - concat mode: signal shape (B, L+4), returned_conditioner shape (B, 4)
-            - film mode:   signal shape (B, L),   returned_conditioner shape (B, 4)
+    """
+    Reverse diffusion engine supporting both raw signal space and latent space.
+    If a compressor is passed, reverse diffusion operates on latents z_T -> z_0,
+    and decodes to raw signals via compressor.decode(z_0).
     """
     gen_cfg = config["generation"]
     mod_cfg = config["model"]
     calib_cfg = config.get("calibration", {})
+    vae_cfg = config.get("vae", {})
+    vae_enabled = vae_cfg.get("enabled", False)
 
     is_calib = calib_cfg.get("enabled", False)
     cond_method = calib_cfg.get("conditioning_method", "concat")
@@ -46,43 +47,29 @@ def run_reverse_diffusion_loop(
     full_len = mod_cfg["signal_len"]
     num_tracking_steps = gen_cfg.get("num_tracking_steps", 0)
 
-    # Resolve dataset directory and global calibration bounds path upfront
     base_dir = config["paths"]["base_dir"]
     dataset_name = config["paths"]["dataset_name"]
-    dataset_dir = config["paths"].get(
-        "dataset_dir", os.path.join(base_dir, dataset_name)
-    )
+    dataset_dir = config["paths"].get("dataset_dir", os.path.join(base_dir, dataset_name))
     if bounds_path is None:
         bounds_path = os.path.join(dataset_dir, "global_calib_bounds.json")
 
-        # FiLM conditioning vector generation / sampling logic
+    # FiLM conditioning vector generation
     if is_calib and cond_method == "film" and conditioner is None:
         if sample_real_coeffs:
             coeff_path = os.path.join(dataset_dir, "coeff_matrix.npy")
-
             if not os.path.exists(coeff_path):
-                raise FileNotFoundError(
-                    f"FiLM calibration enabled but missing coeff matrix at: {coeff_path}"
-                )
-
+                raise FileNotFoundError(f"Missing coeff matrix at: {coeff_path}")
             raw_coeffs = np.load(coeff_path).astype(np.float32)
             indices = np.random.choice(
-                len(raw_coeffs),
-                size=num_samples,
-                replace=(num_samples > len(raw_coeffs)),
+                len(raw_coeffs), size=num_samples, replace=(num_samples > len(raw_coeffs))
             )
             sampled_raw = raw_coeffs[indices]
-
             try:
-                norm_coeffs = helpers.normalize_coeffs(
-                    sampled_raw, bounds_path=str(bounds_path)
-                )
+                norm_coeffs = helpers.normalize_coeffs(sampled_raw, bounds_path=str(bounds_path))
             except TypeError:
                 norm_coeffs = helpers.normalize_coeffs(sampled_raw)
-
             conditioner = torch.from_numpy(norm_coeffs).float().to(device)
         else:
-            # Generate valid normalized synthetic calibration vectors strictly in [0, 1]
             conditioner = torch.rand(num_samples, num_params, device=device)
 
     with torch.no_grad():
@@ -110,16 +97,12 @@ def run_reverse_diffusion_loop(
                     T_steps.append(t + twiddle)
                     step_found = True
                     break
-
             if not step_found:
-                if alpha_cum[s] >= talpha_cum[0]:
-                    T_steps.append(0.0)
-                else:
-                    T_steps.append(float(T - 1))
+                T_steps.append(0.0 if alpha_cum[s] >= talpha_cum[0] else float(T - 1))
 
         T_steps = np.array(T_steps, dtype=np.float32)
 
-        # Initialize x_T Gaussian noise (Length L+4 for Concat, L for FiLM)
+        # Initialize z_T or x_T ~ N(0, I)
         signal = torch.randn(num_samples, full_len, device=device)
         noise_scale = torch.from_numpy(alpha_cum**0.5).float().to(device)
 
@@ -139,71 +122,16 @@ def run_reverse_diffusion_loop(
         # Reverse diffusion loop
         for n in tqdm(range(len(alpha) - 1, -1, -1), desc="Denoising Progress"):
             step_conditioner = (
-                signal[:, -4:]
-                if (is_calib and cond_method == "concat")
-                else conditioner
+                signal[:, -4:] if (is_calib and cond_method == "concat") else conditioner
             )
 
-            if n == len(alpha) - 1 and n in track_indices:
-                signal_part = (
-                    signal[0, :-4]
-                    if (is_calib and cond_method == "concat")
-                    else signal[0]
+            # Optional step visualization (decoding intermediate latent when VAE is active)
+            if n in track_indices and not vae_enabled:
+                signal_part = signal[0, :-4] if (is_calib and cond_method == "concat") else signal[0]
+                calib_part = signal[0, -4:] if (is_calib and cond_method == "concat") else (
+                    step_conditioner[0] if step_conditioner is not None else None
                 )
-                calib_part = (
-                    signal[0, -4:]
-                    if (is_calib and cond_method == "concat")
-                    else (
-                        step_conditioner[0]
-                        if step_conditioner is not None
-                        else None
-                    )
-                )
-                plot_diffusion_step(
-                    current_track_path,
-                    signal_part,
-                    noise_scale[n].item(),
-                    n,
-                    "T",
-                    max_val,
-                    calib_params=calib_part,
-                    bounds_path=bounds_path,
-                )
-
-            c1 = 1 / alpha[n] ** 0.5
-            c2 = beta[n] / (1 - alpha_cum[n]) ** 0.5
-
-            t_tensor = torch.full((num_samples,), T_steps[n], device=device)
-            predicted_noise = model(
-                signal, t_tensor, conditioner=step_conditioner
-            ).squeeze(1)
-            signal = c1 * (signal - c2 * predicted_noise)
-
-            if n > 0:
-                noise = torch.randn_like(signal)
-                sigma = (
-                    (1.0 - alpha_cum[n - 1])
-                    / (1.0 - alpha_cum[n])
-                    * beta[n]
-                ) ** 0.5
-                signal += sigma * noise
-
-            if n in track_indices and n != len(alpha) - 1:
-                label = f"{n}"
-                signal_part = (
-                    signal[0, :-4]
-                    if (is_calib and cond_method == "concat")
-                    else signal[0]
-                )
-                calib_part = (
-                    signal[0, -4:]
-                    if (is_calib and cond_method == "concat")
-                    else (
-                        step_conditioner[0]
-                        if step_conditioner is not None
-                        else None
-                    )
-                )
+                label = "T" if n == len(alpha) - 1 else f"{n}"
                 plot_diffusion_step(
                     current_track_path,
                     signal_part,
@@ -215,16 +143,34 @@ def run_reverse_diffusion_loop(
                     bounds_path=bounds_path,
                 )
 
-        signal = torch.clamp(signal, 0.0, 1.0)
+            c1 = 1 / alpha[n] ** 0.5
+            c2 = beta[n] / (1 - alpha_cum[n]) ** 0.5
 
-    # Determine returned conditioner vector for downstream un-normalization
-    if is_calib:
-        if cond_method == "concat":
-            returned_conditioner = signal[:, -calib_cfg.get("num_params", 4) :]
-        else:  # film
-            returned_conditioner = conditioner
-    else:
-        returned_conditioner = None
+            t_tensor = torch.full((num_samples,), T_steps[n], device=device)
+            predicted_noise = model(signal, t_tensor, conditioner=step_conditioner).squeeze(1)
+            signal = c1 * (signal - c2 * predicted_noise)
+
+            if n > 0:
+                noise = torch.randn_like(signal)
+                sigma = ((1.0 - alpha_cum[n - 1]) / (1.0 - alpha_cum[n]) * beta[n]) ** 0.5
+                signal += sigma * noise
+
+        # Extract returned conditioner before VAE decoding
+        if is_calib:
+            if cond_method == "concat":
+                returned_conditioner = signal[:, -num_params:]
+                signal = signal[:, :-num_params]
+            else:
+                returned_conditioner = conditioner
+        else:
+            returned_conditioner = None
+
+        # Decode from latent space to raw signal space
+        if compressor is not None and vae_enabled:
+            signal = compressor.decode(signal)
+
+        # Clamp normalized output to [0, 1]
+        signal = torch.clamp(signal, 0.0, 1.0)
 
     return signal, returned_conditioner
 
@@ -238,12 +184,13 @@ def load_model_and_generate(
     sample_real_coeffs=False,
     bounds_path=None,
 ):
-    """Initializes model, loads checkpoint weights, and triggers reverse diffusion."""
     weights_path = config["generation"]["model_path"]
     num_samples = config["generation"]["num_samples_to_generate"]
 
     if not os.path.exists(weights_path):
-        raise FileNotFoundError(f"Weights not found at {weights_path}")
+        raise FileNotFoundError(f"Weights not found at: {weights_path}")
+
+    compressor = create_compressor(config, device)
 
     checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
     model = DiffWave(config).to(device)
@@ -251,16 +198,17 @@ def load_model_and_generate(
     model.eval()
 
     return run_reverse_diffusion_loop(
-        model,
-        config,
-        num_samples,
-        device,
+        model=model,
+        config=config,
+        num_samples=num_samples,
+        device=device,
         track_dir=track_dir,
         global_step="inference",
         max_val=max_val,
         conditioner=conditioner,
         sample_real_coeffs=sample_real_coeffs,
         bounds_path=bounds_path,
+        compressor=compressor,
     )
 
 
@@ -276,7 +224,6 @@ def execute_inference_pipeline(
     bounds_path=None,
     sample_real_coeffs=False,
 ):
-    """Handles IO, execution, slicing, and un-normalization of generated samples."""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     model_name = os.path.splitext(os.path.basename(weights_path))[0]
 
@@ -284,15 +231,12 @@ def execute_inference_pipeline(
     fast_sampling = gen_cfg.get("fast_sampling", True)
 
     if fast_sampling:
-        inference_schedule = config["model"].get(
-            "inference_noise_schedule", []
-        )
-        num_fast_steps = len(inference_schedule)
-        model_name = f"{model_name}_T={num_fast_steps}"
+        inference_schedule = config["model"].get("inference_noise_schedule", [])
+        model_name = f"{model_name}_T={len(inference_schedule)}"
 
-    run_name = os.path.basename(os.path.dirname(weights_path))
-    if (sample_real_coeffs):
-        save_dir = (f"results/{run_name}/{model_name}_{timestamp}")
+    run_name = os.path.basename(os.path.dirname(os.path.dirname(weights_path)))
+    if sample_real_coeffs:
+        save_dir = f"results/{run_name}/{model_name}_{timestamp}"
     else:
         save_dir = f"results/{run_name}/{model_name}_{timestamp}_generated_coeffs"
     os.makedirs(save_dir, exist_ok=True)
@@ -302,7 +246,6 @@ def execute_inference_pipeline(
 
     max_val = np.load(scaling_path)
 
-    # Run reverse diffusion loop
     signal, returned_conditioner = load_model_and_generate(
         config=config,
         device=device,
@@ -315,45 +258,25 @@ def execute_inference_pipeline(
 
     generated_scaled = signal.cpu().numpy()
 
-    # --- Slicing and Un-normalizing Logic ---
-    if is_calib:
-        if cond_method == "concat":
-            gen_spectrum_norm = generated_scaled[:, :-num_calib_params]
-            gen_coeffs_norm = generated_scaled[:, -num_calib_params:]
-
-            generated_counts = helpers.unnormalize(gen_spectrum_norm, max_val)
-            generated_counts = np.clip(
-                np.round(generated_counts), a_min=0, a_max=None
-            )
-            try:
-                gen_coeffs = helpers.unnormalize_coeffs(
-                    gen_coeffs_norm, bounds_path=str(bounds_path)
-                )
-            except TypeError:
-                gen_coeffs = helpers.unnormalize_coeffs(gen_coeffs_norm)
-
-        elif cond_method == "film":
-            gen_spectrum_norm = generated_scaled  # Signal is purely L length
-            generated_counts = helpers.unnormalize(gen_spectrum_norm, max_val)
-            generated_counts = np.clip(
-                np.round(generated_counts), a_min=0, a_max=None
-            )
-
-            if returned_conditioner is not None:
-                gen_coeffs_norm = returned_conditioner.cpu().numpy()
-                try:
-                    gen_coeffs = helpers.unnormalize_coeffs(
-                        gen_coeffs_norm, bounds_path=str(bounds_path)
-                    )
-                except TypeError:
-                    gen_coeffs = helpers.unnormalize_coeffs(gen_coeffs_norm)
-            else:
-                gen_coeffs = None
+    # Slicing and un-normalizing
+    if is_calib and cond_method == "concat" and not config.get("vae", {}).get("enabled", False):
+        gen_spectrum_norm = generated_scaled[:, :-num_calib_params]
+        gen_coeffs_norm = generated_scaled[:, -num_calib_params:]
     else:
-        generated_counts = helpers.unnormalize(generated_scaled, max_val)
-        generated_counts = np.clip(
-            np.round(generated_counts), a_min=0, a_max=None
+        gen_spectrum_norm = generated_scaled
+        gen_coeffs_norm = (
+            returned_conditioner.cpu().numpy() if returned_conditioner is not None else None
         )
+
+    generated_counts = helpers.unnormalize(gen_spectrum_norm, max_val)
+    generated_counts = np.clip(np.round(generated_counts), a_min=0, a_max=None)
+
+    if gen_coeffs_norm is not None:
+        try:
+            gen_coeffs = helpers.unnormalize_coeffs(gen_coeffs_norm, bounds_path=str(bounds_path))
+        except TypeError:
+            gen_coeffs = helpers.unnormalize_coeffs(gen_coeffs_norm)
+    else:
         gen_coeffs = None
 
     return generated_counts, gen_coeffs, save_dir, model_name
@@ -363,8 +286,8 @@ def main(args):
     config = helpers.load_config(args.exp, args.model)
     calib_cfg = config.get("calibration", {})
     gen_cfg = config.get("generation", {})
+    vae_cfg = config.get("vae", {})
 
-    # CLI parameter overrides
     if args.num_samples is not None:
         config["generation"]["num_samples_to_generate"] = args.num_samples
     if args.model_path is not None:
@@ -376,35 +299,43 @@ def main(args):
     num_calib_params = calib_cfg.get("num_params", 4)
     cond_method = calib_cfg.get("conditioning_method", "concat")
 
-    if is_calib and cond_method == "concat":
-        config["model"]["signal_len"] += num_calib_params
+    base_dir = config["paths"]["base_dir"]
+    dataset_name = config["paths"]["dataset_name"]
+    dataset_dir = os.path.join(base_dir, dataset_name)
+    config["paths"]["dataset_dir"] = dataset_dir
+    scaling_path = os.path.join(dataset_dir, "scaling_factor.npy")
+    bounds_path = os.path.join(dataset_dir, "global_calib_bounds.json")
+
+    # Inspect raw signal length
+    temp_data = np.load(os.path.join(dataset_dir, "spectrum_matrix.npy"), mmap_mode="r")
+    raw_signal_len = temp_data.shape[1]
+    config["paths"]["raw_signal_len"] = raw_signal_len
+    del temp_data
+
+    # Set internal signal length for DiffWave
+    if vae_cfg.get("enabled", False):
+        config["model"]["signal_len"] = vae_cfg.get("latent_dim", 2048)
+    else:
+        config["model"]["signal_len"] = raw_signal_len
+        if is_calib and cond_method == "concat":
+            config["model"]["signal_len"] += num_calib_params
 
     device = helpers.setup_device(config["hardware"], mode="inference")
     weights_path = config["generation"]["model_path"]
     num_samples = config["generation"]["num_samples_to_generate"]
 
-    base_dir = config["paths"]["base_dir"]
-    dataset_name = config["paths"]["dataset_name"]
-    dataset_dir = os.path.join(base_dir, dataset_name)
-
-    config["paths"]["dataset_dir"] = dataset_dir
-    scaling_path = os.path.join(dataset_dir, "scaling_factor.npy")
-    bounds_path = os.path.join(dataset_dir, "global_calib_bounds.json")
-
     print(f"Generating {num_samples} samples from {weights_path}...")
 
-    generated_counts, gen_coeffs, save_dir, model_name = (
-        execute_inference_pipeline(
-            config,
-            device,
-            scaling_path,
-            weights_path,
-            is_calib,
-            num_calib_params,
-            cond_method,
-            bounds_path=bounds_path,
-            sample_real_coeffs=args.sample_real_coeffs,
-        )
+    generated_counts, gen_coeffs, save_dir, model_name = execute_inference_pipeline(
+        config=config,
+        device=device,
+        scaling_path=scaling_path,
+        weights_path=weights_path,
+        is_calib=is_calib,
+        num_calib_params=num_calib_params,
+        cond_method=cond_method,
+        bounds_path=bounds_path,
+        sample_real_coeffs=args.sample_real_coeffs,
     )
 
     if is_calib and gen_coeffs is not None:
@@ -416,10 +347,7 @@ def main(args):
             detect_peaks=detect_peaks,
             min_prominence=min_prominence,
         )
-        gen_coeff_path = os.path.join(
-            save_dir, f"all_{num_samples}_coeffs.npy"
-        )
-        np.save(gen_coeff_path, gen_coeffs)
+        np.save(os.path.join(save_dir, f"all_{num_samples}_coeffs.npy"), gen_coeffs)
     else:
         plot_and_save_spectra(
             generated_counts,
@@ -429,7 +357,6 @@ def main(args):
             min_prominence=min_prominence,
         )
 
-    # Save peak reports if peak detection is enabled
     if detect_peaks:
         helpers.save_extracted_peaks_to_files(
             generated_counts,
@@ -444,11 +371,11 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = ArgumentParser(description="Runs inference for 1-D DiffWave")
+    parser = argparse.ArgumentParser(description="Runs inference for 1-D DiffWave")
     parser.add_argument(
         "--exp",
         type=str,
-        default="configs/experiments/diffwave_base.yaml",
+        default="configs/experiments/diffwave_BAQ.yaml",
         help="Path to experiment config",
     )
     parser.add_argument(
@@ -462,16 +389,6 @@ if __name__ == "__main__":
         action="store_true",
         help="Sample real calibration coefficients from dataset and normalize them for FiLM conditioning",
     )
-    parser.add_argument(
-        "--num_samples",
-        type=int,
-        default=None,
-        help="Override number of samples to generate",
-    )
-    parser.add_argument(
-        "--model_path",
-        type=str,
-        default=None,
-        help="Override model checkpoint weights path",
-    )
+    parser.add_argument("--num_samples", type=int, default=None)
+    parser.add_argument("--model_path", type=str, default=None)
     main(parser.parse_args())
