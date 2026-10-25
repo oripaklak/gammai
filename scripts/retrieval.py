@@ -6,7 +6,6 @@ from scipy.spatial.distance import cdist
 from argparse import ArgumentParser
 from pathlib import Path
 
-# Add project root to path so we can import config loaders and models
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils.helpers import load_config
 from utils.sift import TemporalSIFT, SIFTBagOfWords
@@ -130,26 +129,26 @@ def load_grouped_real_data(data_dirs, is_calib=False):
     return grouped_data, grouped_coeffs, grouped_paths
 
 
-def find_and_plot_closest_spectra(data_dirs, results_dir, config, metric="cosine", calib_weight=0.0, n_clusters=64):
+def find_and_plot_closest_spectra(data_dirs, dir, config, metric="cosine", calib_weight=0.0, n_clusters=64):
     """
     Main retrieval engine: compares generated spectra against the real dataset on an energy-aligned grid.
     """
     is_calib = config.get('calibration', {}).get('enabled', False)
 
     # 1. Load generated samples
-    gen_files = [f for f in os.listdir(results_dir) if f.startswith("all_") and f.endswith("samples.npy")]
+    gen_files = [f for f in os.listdir(dir) if f.startswith("all_") and f.endswith("samples.npy")]
     if not gen_files:
-        raise FileNotFoundError(f"No generated samples .npy file found in {results_dir}")
-    gen_data = np.load(os.path.join(results_dir, gen_files[0])).astype(np.float32)
+        raise FileNotFoundError(f"No generated samples .npy file found in {dir}")
+    gen_data = np.load(os.path.join(dir, gen_files[0])).astype(np.float32)
     num_samples = gen_data.shape[0]
 
     # 2. Load generated calibration coefficients if enabled
     gen_coeffs = None
     if is_calib:
-        coeff_files = [f for f in os.listdir(results_dir) if f.startswith("all_") and f.endswith("coeffs.npy")]
+        coeff_files = [f for f in os.listdir(dir) if f.startswith("all_") and f.endswith("coeffs.npy")]
         if not coeff_files:
-            raise FileNotFoundError(f"No generated coeffs .npy file found in {results_dir}")
-        gen_coeffs = np.load(os.path.join(results_dir, coeff_files[0])).astype(np.float32)
+            raise FileNotFoundError(f"No generated coeffs .npy file found in {dir}")
+        gen_coeffs = np.load(os.path.join(dir, coeff_files[0])).astype(np.float32)
 
     # 3. Load real dataset
     real_data_groups, real_coeffs_groups, real_paths_groups = load_grouped_real_data(data_dirs, is_calib)
@@ -198,7 +197,7 @@ def find_and_plot_closest_spectra(data_dirs, results_dir, config, metric="cosine
 
     # 5. Output setup
     mode_str = "calibrated" if is_calib else "uncalibrated"
-    retrieval_dir = os.path.join(results_dir, f"retrieval_comparisons_{metric}_{mode_str}_calib_weight_{calib_weight}")
+    retrieval_dir = os.path.join(dir, f"retrieval_comparisons_{metric}_{mode_str}_calib_weight_{calib_weight}")
     os.makedirs(retrieval_dir, exist_ok=True)
 
     dist_label = f"{metric.upper()}_Dist"
@@ -362,10 +361,10 @@ def _plot_side_by_side(gen_spec, gen_coeff, real_spec, real_coeff, closest_file_
 if __name__ == "__main__":
     parser = ArgumentParser(
         description='Find closest real spectra using Energy-Aligned SIFT, Cosine, or Euclidean metrics')
-    parser.add_argument("--results_dir", type=str, required=True, help="Path to the specific inference results folder")
+    parser.add_argument("--dir", type=str, required=True, help="Path to the specific inference results folder")
     parser.add_argument("--metric", type=str, choices=["cosine", "euclidean", "sift"], default="cosine",
                         help="Matching metric to use ('cosine', 'euclidean', or 'sift')")
-    parser.add_argument("--exp", type=str, default="configs/experiments/diffwave_Baq.yaml",
+    parser.add_argument("--exp", type=str, default="configs/experiments/diffwave_BAQ.yaml",
                         help="Path to experiment config")
     parser.add_argument("--model", type=str, default="configs/models/diffwave.yaml", help="Path to model config")
     parser.add_argument("--calib_weight", type=float, default=0.002,
@@ -383,14 +382,14 @@ if __name__ == "__main__":
     dataset_dir = os.path.join(base_dir, dataset_name)
 
     data_dirs = [
-        "data/Baq/spectra_txt",
-        # "data/IAEA/2023/spectra_txt",
-        # "data/IAEA/2024/spectra_txt",
+        # "data/Baq/spectra_txt",
+        "data/IAEA/2023/spectra_txt",
+        "data/IAEA/2024/spectra_txt",
     ]
 
     find_and_plot_closest_spectra(
         data_dirs=data_dirs,
-        results_dir=args.results_dir,
+        dir=args.dir,
         config=config,
         metric=args.metric,
         calib_weight=args.calib_weight,
