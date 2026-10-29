@@ -275,7 +275,7 @@ def unnormalize_coeffs(norm_coeffs, bounds_path=None):
     return raw_coeffs
 
 
-def compute_safe_energies(coeffs, num_channels):
+def compute_energies(coeffs, num_channels):
     """Evaluates polynomial calibration coefficients while enforcing:
     1. Strictly non-negative energy values (E >= 0.0).
     2. Monotonic non-decreasing progression across channels.
@@ -309,7 +309,7 @@ def extract_gamma_peaks(
             coeffs = unnormalize_coeffs(calib_np, bounds_path=bounds_path)
         except Exception:
             coeffs = calib_np
-        x_axis = compute_safe_energies(coeffs, L)
+        x_axis = compute_energies(coeffs, L)
     else:
         x_axis = channels
 
