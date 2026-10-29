@@ -69,7 +69,7 @@ def plot_and_save_spectra(
         fig, ax = plt.subplots(figsize=(12, 4.5))
 
         if coeffs is not None and len(coeffs) == 4:
-            x_axis = helpers.compute_safe_energies(coeffs, L)
+            x_axis = helpers.compute_energies(coeffs, L)
             x_label = "Energy (keV)"
             max_e = np.max(x_axis) if len(x_axis) > 0 else 3000.0
             xlim_right = float(np.clip(max_e, 30.0, 3000.0))
@@ -190,7 +190,7 @@ def plot_diffusion_step(
             coeffs = calib_np
 
         # Always evaluate energies in keV when calib_params are present
-        x_axis = helpers.compute_safe_energies(coeffs, L)
+        x_axis = helpers.compute_energies(coeffs, L)
         x_label = "Energy (keV)"
         title_ext = " | Calibrated"
 
