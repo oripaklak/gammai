@@ -10,7 +10,7 @@ import numpy as np
 # Add project root to sys.path to import from utils/
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from utils.helpers import compute_safe_energies
+from utils.helpers import compute_energies
 
 
 # ==============================================================================
@@ -102,7 +102,7 @@ def plot_side_by_side_nda(
 
     # Calculate x-axis in Energy (keV) if coefficients exist, otherwise Channels
     if coeffs is not None and len(coeffs) == 4:
-        x_axis = compute_safe_energies(coeffs, L)
+        x_axis = compute_energies(coeffs, L)
         x_label = "Energy (keV)"
         max_e = np.max(x_axis) if len(x_axis) > 0 else 3000.0
         plot_max_x = float(np.clip(max_e, 30.0, 3000.0))
