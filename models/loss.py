@@ -12,12 +12,12 @@ class LimitedDataLoss(nn.Module):
         diff_real = (pred_clean - target_clean).reshape(B, -1)
 
         # 1. Standard Denoising L2 loss: || D_theta(x) - y ||_2^2
-        recon_loss = torch.sum(diff_real ** 2, dim =-1).mean()
+        recon_loss = torch.mean(diff_real ** 2, dim =-1).mean()
 
         # 2. OOD Regularization: 1 / (||D_theta(x) - y_hat||_2^2 + eta)
         if use_nda and ood_sample is not None:
             diff_ood = (pred_clean - ood_sample).reshape(B, -1)
-            dist_to_ood_sq = torch.sum(diff_ood ** 2, dim=-1)
+            dist_to_ood_sq = torch.mean(diff_ood ** 2, dim=-1)
             ood_loss = (1.0 / (dist_to_ood_sq + self.eta)).mean()
 
         total_loss = recon_loss + ood_loss
