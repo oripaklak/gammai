@@ -1,3 +1,11 @@
+import os
+import ssl
+
+# Bypass SSL inspection issues
+os.environ["HF_HUB_DISABLE_SSL_VERIFICATION"] = "1"
+os.environ["CURL_CA_BUNDLE"] = ""
+ssl._create_default_https_context = ssl._create_unverified_context
+
 import argparse
 from datetime import timedelta
 import os
@@ -28,14 +36,14 @@ from utils.metrics import calculate_f_mem, calculate_fid, calculate_kid
 from utils.plot import plot_noise_schedule
 
 
-def apply_nda_batch(x_0_tensor, energy_max=3000.0):
+def apply_nda_batch(x_0_tensor):
     device = x_0_tensor.device
     B, L = x_0_tensor.shape
     x_0_np = x_0_tensor.detach().cpu().numpy()
 
     y_ood_list = []
     for i in range(B):
-        mutated_y, _, _ = apply_nda_mutations(x_0_np[i], energy_max=energy_max)
+        mutated_y, _, _ = apply_nda_mutations(x_0_np[i])
         y_ood_list.append(mutated_y)
 
     y_ood_np = np.stack(y_ood_list, axis=0)
@@ -226,6 +234,37 @@ class DiffWaveLearner:
         torch.set_rng_state(torch_rng_state)
         torch.cuda.set_rng_state(cuda_rng_state)
 
+    # def track_train_step(self, spec_raw, pred_clean, conditioner=None):
+    #     """Saves a plot of the current training batch clean prediction."""
+    #     step_dir = os.path.join(self.track_dir_train, f"step_{self.step}")
+    #     os.makedirs(step_dir, exist_ok=True)
+    # 
+    #     with torch.no_grad():
+    #         if self.vae_enabled:
+    #             pred_latent = pred_clean[0:1, :-4] if (
+    #                         self.config.get("calibration", {}).get("conditioning_method") == "concat") else pred_clean[
+    #                                                                                                         0:1]
+    #             pred_signal = self.compressor.decode(pred_latent)[0]
+    #         else:
+    #             pred_signal = pred_clean[0, :-4] if (
+    #                         self.config.get("calibration", {}).get("conditioning_method") == "concat") else pred_clean[
+    #                 0]
+    # 
+    #         from utils.plot import plot_diffusion_step
+    #         calib_part = conditioner[0] if conditioner is not None else None
+    #         bounds_path = os.path.join(self.config["paths"]["dataset_dir"], "global_calib_bounds.json")
+    # 
+    #         plot_diffusion_step(
+    #             track_path=step_dir,
+    #             single_signal=pred_signal,
+    #             noise_scale_val=0.0,
+    #             loop_idx=0,
+    #             label=f"train_pred_step_{self.step}",
+    #             max_val=self.max_val,
+    #             calib_params=calib_part,
+    #             bounds_path=bounds_path,
+    #         )
+
     def train_step(self, features):
         for param in self.model.parameters():
             param.grad = None
@@ -274,7 +313,7 @@ class DiffWaveLearner:
                 )
 
                 # Mutate raw spectrum and project to latent space
-                raw_ood = apply_nda_batch(spec_raw, energy_max=3000.0)
+                raw_ood = apply_nda_batch(spec_raw)
                 target_ood = self.compressor.encode(raw_ood)
 
                 loss, recon_loss, ood_loss = self.criterion(
@@ -295,7 +334,7 @@ class DiffWaveLearner:
                     pred_clean = (noisy_input - one_minus_alpha_sqrt * pred_noise) / (
                         noise_scale_sqrt + 1e-8
                     )
-                    ood_sample = apply_nda_batch(spec_raw, energy_max=3000.0)
+                    ood_sample = apply_nda_batch(spec_raw)
                     diff_ood = (pred_clean - ood_sample).reshape(B, -1)
                     dist_to_ood_sq = torch.sum(diff_ood**2, dim=-1)
                     loss_ood = (1.0 / (dist_to_ood_sq + self.eta)).mean()
@@ -365,6 +404,7 @@ class DiffWaveLearner:
                 if self.step > 0 and self.step % checkpoint_freq == 0:
                     if self.is_master:
                         self.save_to_checkpoint()
+                        # self.track_train_step(spec_raw, pred_clean, conditioner)
                     if torch.distributed.is_initialized():
                         dist.barrier()
 
@@ -496,7 +536,7 @@ def _get_free_port():
 
 def main():
     parser = argparse.ArgumentParser(description="Train 1-D DiffWave Model")
-    parser.add_argument("--exp", type=str, default="configs/experiments/diffwave_BAQ.yaml")
+    parser.add_argument("--exp", type=str, default="configs/experiments/diffwave_base.yaml")
     parser.add_argument("--model", type=str, default="configs/models/diffwave.yaml")
     args = parser.parse_args()
 
