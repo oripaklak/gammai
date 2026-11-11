@@ -9,16 +9,19 @@ experiment:
 # ------------------------------------------------------------------------------
 vae:
   enabled: true                                          # false = Raw signal space (DDPM), true = Latent space (LD-Diffusion)
+  type: "kvae_audio"                                     # Routes to HF KVAEAudioCompressor ("hf", "kvae", or "diffusers")
   latent_dim: 2048                                       # Must match the trained VAE latent dimension
   checkpoint_path: "experiments/vae_ld2048_bs64_lr0.0001_ep10000/checkpoints/checkpoint_ep10000.pth" # Path to trained VAE checkpoint
+  local_path: "models/pretrained/KVAE-Audio"
 
 # ------------------------------------------------------------------------------
 # Loss Strategy Settings
 # ------------------------------------------------------------------------------
 loss:
   use_nda: true         # Enable 1D Negative Data Augmentation (NDA)
-  lambda_nda: 0.01      # Regularization weight (\lambda)
+  lambda_nda: 2         # Regularization weight (\lambda)
   eta: 100.0            # Stability constant (\eta) from Eq. 10/13
+
 
 calibration:
   enabled: true
@@ -49,7 +52,7 @@ evaluation:
   eval_freq: 2000
 
 generation:
-  model_path: "experiments/stable_diff_ld2048_9M_BAQ_L36C128_cosine0.01_bs16_lr2e-4_steps200k_film-pre_proj_nda0.01_s40/checkpoints/weights-186000.pt"
+  model_path: "experiments/stable_diff_ld2048_9M_IAEA_BAQ_L36C128_cosine0.01_bs16_lr2e-4_steps200k_film-pre_proj_nda0.01_s40/checkpoints/weights.pt"
   num_samples_to_generate: 200
   num_tracking_steps: 10
   fast_sampling: false
