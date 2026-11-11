@@ -52,10 +52,15 @@ def plot_and_save_spectra(
     model_name,
     gen_coeffs=None,
     detect_peaks=False,
-    min_prominence=25.0,
+    confidence_factor=3.5,
+    fwhm=10.0,
+    min_distance=50,
     bounds_path=None,
 ):
-    """Plots final generated spectra in Energy (keV) space."""
+    """Plots final generated spectra in Energy (keV) space, optionally overlaying
+
+    peaks extracted via Mariscotti's second-difference method (Fearn et al., 2022).
+    """
     os.makedirs(save_dir, exist_ok=True)
     num_samples = len(generated_counts)
 
@@ -93,8 +98,8 @@ def plot_and_save_spectra(
             peaks_data = helpers.extract_gamma_peaks(
                 spectrum,
                 calib_coeffs=coeffs,
-                min_prominence=min_prominence,
-                min_distance=50,
+                confidence_factor=confidence_factor,
+                fwhm=fwhm,
                 bounds_path=bounds_path,
             )
 
