@@ -96,4 +96,4 @@ class SpectrumVAE(nn.Module):
 def vae_loss_function(reconstructed_x, x, mu, logvar, beta = 1.0):
     MSE = F.mse_loss(reconstructed_x, x, reduction='sum')
     KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-    return MSE + (beta * KLD)
+    return MSE, MSE + (beta * KLD)

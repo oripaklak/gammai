@@ -7,11 +7,14 @@ import numpy as np
 # Add the project root to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from utils.helpers import load_config, setup_device, plot_and_save_spectra
+from utils.helpers import load_config, setup_device, plot_and_save_spectra, unnormalize
 from models.vae import SpectrumVAE
 
 # --- 1. Load Configuration ---
-config = load_config("configs/vae.yaml")
+config = load_config(
+    "configs/experiments/vae_base.yaml",
+    "configs/models/vae.yaml"
+)
 
 LATENT_DIM = config["model"]["latent_dim"]
 WEIGHTS_PATH = config["generation"]["model_path"]
