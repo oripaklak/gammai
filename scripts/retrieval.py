@@ -382,9 +382,9 @@ if __name__ == "__main__":
     dataset_dir = os.path.join(base_dir, dataset_name)
 
     data_dirs = [
-        # "data/Baq/spectra_txt",
-        "data/IAEA/2023/spectra_txt",
-        "data/IAEA/2024/spectra_txt",
+        "data/BAQ/spectra_txt",
+        # "data/IAEA/2023/spectra_txt",
+        # "data/IAEA/2024/spectra_txt",
     ]
 
     find_and_plot_closest_spectra(

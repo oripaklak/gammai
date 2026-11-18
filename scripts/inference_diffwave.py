@@ -119,30 +119,70 @@ def run_reverse_diffusion_loop(
         else:
             track_indices = set()
 
+        # # Reverse diffusion loop
+        # for n in tqdm(range(len(alpha) - 1, -1, -1), desc="Denoising Progress"):
+        #     step_conditioner = (
+        #         signal[:, -4:] if (is_calib and cond_method == "concat") else conditioner
+        #     )
+        # 
+        #     # Optional step visualization (decoding intermediate latent when VAE is active)
+        #     if n in track_indices and not vae_enabled:
+        #         signal_part = signal[0, :-4] if (is_calib and cond_method == "concat") else signal[0]
+        #         calib_part = signal[0, -4:] if (is_calib and cond_method == "concat") else (
+        #             step_conditioner[0] if step_conditioner is not None else None
+        #         )
+        #         label = "T" if n == len(alpha) - 1 else f"{n}"
+        #         plot_diffusion_step(
+        #             current_track_path,
+        #             signal_part,
+        #             noise_scale[n].item(),
+        #             n,
+        #             label,
+        #             max_val,
+        #             calib_params=calib_part,
+        #             bounds_path=bounds_path,
+        #         )
         # Reverse diffusion loop
         for n in tqdm(range(len(alpha) - 1, -1, -1), desc="Denoising Progress"):
             step_conditioner = (
-                signal[:, -4:] if (is_calib and cond_method == "concat") else conditioner
+                signal[:, -num_params:] if (is_calib and cond_method == "concat") else conditioner
             )
 
-            # Optional step visualization (decoding intermediate latent when VAE is active)
-            if n in track_indices and not vae_enabled:
-                signal_part = signal[0, :-4] if (is_calib and cond_method == "concat") else signal[0]
-                calib_part = signal[0, -4:] if (is_calib and cond_method == "concat") else (
-                    step_conditioner[0] if step_conditioner is not None else None
+            # Step visualization (supports both raw signal space and latent space via VAE)
+            if n in track_indices:
+                if vae_enabled and compressor is not None:
+                    # Extract latent vector and decode to raw 1D signal space
+                    latent_slice = (
+                        signal[0:1, :-num_params]
+                        if (is_calib and cond_method == "concat")
+                        else signal[0:1]
+                    )
+                    decoded_signal = compressor.decode(latent_slice)
+                    signal_part = decoded_signal[0]
+                else:
+                    signal_part = (
+                        signal[0, :-num_params]
+                        if (is_calib and cond_method == "concat")
+                        else signal[0]
+                    )
+
+                calib_part = (
+                    signal[0, -num_params:]
+                    if (is_calib and cond_method == "concat")
+                    else (step_conditioner[0] if step_conditioner is not None else None)
                 )
+
                 label = "T" if n == len(alpha) - 1 else f"{n}"
                 plot_diffusion_step(
-                    current_track_path,
-                    signal_part,
-                    noise_scale[n].item(),
-                    n,
-                    label,
-                    max_val,
+                    track_path=current_track_path,
+                    single_signal=signal_part,
+                    noise_scale_val=noise_scale[n].item(),
+                    loop_idx=n,
+                    label=label,
+                    max_val=max_val,
                     calib_params=calib_part,
                     bounds_path=bounds_path,
                 )
-
             c1 = 1 / alpha[n] ** 0.5
             c2 = beta[n] / (1 - alpha_cum[n]) ** 0.5
 
@@ -293,8 +333,12 @@ def main(args):
     if args.model_path is not None:
         config["generation"]["model_path"] = args.model_path
 
-    min_prominence = gen_cfg.get("min_prominence", 10.0)
+    # Extract Mariscotti / Fearn algorithm parameters from config
+    confidence_factor = gen_cfg.get("confidence_factor", 3.5)
+    fwhm = gen_cfg.get("fwhm", 10.0)
+    min_distance = gen_cfg.get("min_distance", 50)
     detect_peaks = gen_cfg.get("detect_peaks", False)
+
     is_calib = calib_cfg.get("enabled", False)
     num_calib_params = calib_cfg.get("num_params", 4)
     cond_method = calib_cfg.get("conditioning_method", "concat")
@@ -307,7 +351,9 @@ def main(args):
     bounds_path = os.path.join(dataset_dir, "global_calib_bounds.json")
 
     # Inspect raw signal length
-    temp_data = np.load(os.path.join(dataset_dir, "spectrum_matrix.npy"), mmap_mode="r")
+    temp_data = np.load(
+        os.path.join(dataset_dir, "spectrum_matrix.npy"), mmap_mode="r"
+    )
     raw_signal_len = temp_data.shape[1]
     config["paths"]["raw_signal_len"] = raw_signal_len
     del temp_data
@@ -326,7 +372,12 @@ def main(args):
 
     print(f"Generating {num_samples} samples from {weights_path}...")
 
-    generated_counts, gen_coeffs, save_dir, model_name = execute_inference_pipeline(
+    (
+        generated_counts,
+        gen_coeffs,
+        save_dir,
+        model_name,
+    ) = execute_inference_pipeline(
         config=config,
         device=device,
         scaling_path=scaling_path,
@@ -338,31 +389,33 @@ def main(args):
         sample_real_coeffs=args.sample_real_coeffs,
     )
 
+    plot_and_save_spectra(
+        generated_counts,
+        save_dir,
+        model_name,
+        gen_coeffs=gen_coeffs if is_calib else None,
+        detect_peaks=detect_peaks,
+        confidence_factor=confidence_factor,
+        fwhm=fwhm,
+        min_distance=min_distance,
+        bounds_path=bounds_path if is_calib else None,
+    )
+
     if is_calib and gen_coeffs is not None:
-        plot_and_save_spectra(
-            generated_counts,
-            save_dir,
-            model_name,
-            gen_coeffs,
-            detect_peaks=detect_peaks,
-            min_prominence=min_prominence,
-        )
-        np.save(os.path.join(save_dir, f"all_{num_samples}_coeffs.npy"), gen_coeffs)
-    else:
-        plot_and_save_spectra(
-            generated_counts,
-            save_dir,
-            model_name,
-            detect_peaks=detect_peaks,
-            min_prominence=min_prominence,
+        np.save(
+            os.path.join(save_dir, f"all_{num_samples}_coeffs.npy"), gen_coeffs
         )
 
     if detect_peaks:
-        helpers.save_extracted_peaks_to_files(
+        extracted_records = helpers.save_extracted_peaks_to_files(
             generated_counts,
             save_dir,
-            gen_coeffs if is_calib else None,
-            min_prominence=min_prominence,
+            gen_coeffs=gen_coeffs if is_calib else None,
+            confidence_factor=confidence_factor,
+            fwhm=fwhm,
+            bounds_path=bounds_path if is_calib else None,
+            min_energy=300.0 if is_calib else 0.0,
+            min_distance=max(10, int(round(fwhm * 1.5))),
         )
 
     data_path = os.path.join(save_dir, f"all_{num_samples}_samples.npy")
